@@ -3,39 +3,35 @@ name: Build APK
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Забрать код
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Платформа Android 34 и инструменты сборки
+      - name: Install Android 34
         run: |
-          yes | sdkmanager --licenses || true
-          sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "platform-tools"
+          yes | $ANDROID\_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
+          $ANDROID\_HOME/cmdline-tools/latest/bin/sdkmanager --install "platforms;android-34" "build-tools;34.0.0"
 
       - name: Gradle 8.7
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.7'
 
-      - name: Сборка APK
+      - name: Build APK
         run: gradle assembleDebug --no-daemon --stacktrace
 
-      - name: Отдать APK файлом для скачивания
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ChinaSourcing-debug-apk

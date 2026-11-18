@@ -46,6 +46,25 @@ class SettingsStore(context: Context) {
         get() = prefs.getString("last_query", "").orEmpty()
         set(value) = prefs.edit().putString("last_query", value).apply()
 
+    var queryHistory: List<String>
+        get() = prefs.getString("query_history", "")
+            .orEmpty()
+            .split("||")
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+        set(value) = prefs.edit().putString("query_history", value.take(8).joinToString("||")).apply()
+
+    fun addQueryToHistory(query: String) {
+        val clean = query.trim()
+        if (clean.isEmpty()) return
+        val updated = listOf(clean) + queryHistory.filterNot { it.equals(clean, ignoreCase = true) }
+        queryHistory = updated.take(8)
+    }
+
+    var cnyRate: Float
+        get() = prefs.getFloat("cny_rate", 13.5f)
+        set(value) = prefs.edit().putFloat("cny_rate", value.coerceIn(1f, 200f)).apply()
+
     var translatorEndpoint: String
         get() = prefs.getString("translator_endpoint", DEFAULT_TRANSLATOR).orEmpty()
         set(value) = prefs.edit().putString("translator_endpoint", value.trim()).apply()
@@ -72,13 +91,18 @@ class SettingsStore(context: Context) {
         }
     }
 
-    fun getCookiesBackup(domain: String): String? =
-        prefs.getString("cookies_backup_$domain", null)
-
     fun getAllCookieBackups(): Map<String, String> =
         prefs.all.filterKeys { it.startsWith("cookies_backup_") }
             .mapKeys { it.key.removePrefix("cookies_backup_") }
             .mapValues { it.value.toString() }
+
+    fun removeCookieBackupsFor(domains: List<String>) {
+        val editor = prefs.edit()
+        for (domain in domains) {
+            editor.remove("cookies_backup_$domain")
+        }
+        editor.apply()
+    }
 
     fun markLoggedIn(marketplace: Marketplace, value: Boolean) =
         prefs.edit().putBoolean(loginKey(marketplace), value).apply()

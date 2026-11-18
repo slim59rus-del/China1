@@ -40,13 +40,21 @@ fun WebLoginScreen(
     val context = LocalContext.current
     val webViewState = remember { mutableStateOf<WebView?>(null) }
 
+    fun saveAndClose() {
+        ServiceLocator.cookies.flush()
+        ServiceLocator.cookies.backupKnownDomains()
+        if (ServiceLocator.login.isLoggedIn(marketplace)) {
+            onLoggedIn()
+        }
+        onClosed()
+    }
+
     BackHandler(enabled = true) {
         val wv = webViewState.value
         if (wv != null && wv.canGoBack()) {
             wv.goBack()
         } else {
-            ServiceLocator.cookies.flush()
-            onClosed()
+            saveAndClose()
         }
     }
 
@@ -62,8 +70,7 @@ fun WebLoginScreen(
                 if (wv != null && wv.canGoBack()) {
                     wv.goBack()
                 } else {
-                    ServiceLocator.cookies.flush()
-                    onClosed()
+                    saveAndClose()
                 }
             }) { Text("← Назад") }
 
@@ -86,15 +93,14 @@ fun WebLoginScreen(
                 val alipayEntryUrl = when (marketplace) {
                     Marketplace.TAOBAO -> "https://taobao.com"
                     Marketplace.XIANYU -> "https://taobao.com"
-                    else -> "https://1688.com"
+                    else -> "https://m.1688.com"
                 }
                 webView.loadUrl(alipayEntryUrl)
                 Toast.makeText(context, "Открыта форма с иконкой Alipay (支付宝)", Toast.LENGTH_SHORT).show()
             }) { Text("Alipay") }
 
             TextButton(onClick = {
-                ServiceLocator.cookies.flush()
-                onClosed()
+                saveAndClose()
             }) { Text("Готово") }
         }
         AndroidView(
@@ -131,22 +137,32 @@ fun WebLoginScreen(
                             request: WebResourceRequest?
                         ): Boolean {
                             val url = request?.url?.toString() ?: return false
-                            if (url.startsWith("alipays://") || url.startsWith("alipay://") || url.startsWith("intent://")) {
+                            val scheme = request.url?.scheme?.lowercase() ?: ""
+
+                            if (scheme == "http" || scheme == "https") {
+                                return false
+                            }
+
+                            if (url.startsWith("alipays://") || url.startsWith("alipay://") ||
+                                (url.startsWith("intent://") && url.contains("alipay", ignoreCase = true))
+                            ) {
                                 return try {
                                     val intent = if (url.startsWith("intent://")) {
-                                        Intent.parseUri(url, 1)
+                                        Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
                                     } else {
-                                        Intent("android.intent.action.VIEW", Uri.parse(url))
+                                        Intent(Intent.ACTION_VIEW, Uri.parse(url))
                                     }
-                                    intent.addFlags(268435456)
+                                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                                     ctx.startActivity(intent)
                                     true
                                 } catch (e: Exception) {
                                     Toast.makeText(ctx, "Приложение Alipay не найдено", Toast.LENGTH_SHORT).show()
-                                    false
+                                    true
                                 }
                             }
-                            return false
+
+                            // Блокируем wireless1688://, tbopen:// и прочие диплинки в родные приложения
+                            return true
                         }
 
                         override fun onPageFinished(view: WebView?, url: String?) {

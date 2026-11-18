@@ -1,5 +1,6 @@
 package com.leantech.finder.data.net
 
+import android.webkit.CookieManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
@@ -61,7 +62,9 @@ class MtopClient(
         }.orEmpty()
 
         val tokenGone = ret.any { code ->
-            code.contains("令牌") || code.contains("TOKEN") || code.contains("FAIL_SYS_ILLEGAL_ACCESS")
+            code.contains("令牌") ||
+                code.contains("TOKEN") ||
+                code.contains("FAIL_SYS_ILLEGAL_ACCESS")
         }
         if (tokenGone && retry) {
             cookies.flush()
@@ -124,11 +127,13 @@ class MtopClient(
     }
 
     private fun get(url: String): String {
+        val origin = originFor(url)
         val request = Request.Builder()
             .url(url)
             .header("User-Agent", MOBILE_UA)
             .header("Accept", "application/json, text/plain, */*")
-            .header("Referer", refererFor(url))
+            .header("Origin", origin)
+            .header("Referer", "$origin/")
             .apply {
                 val cookie = cookies.cookieHeader(url)
                 if (cookie.isNotBlank()) header("Cookie", cookie)
@@ -136,6 +141,17 @@ class MtopClient(
             .build()
 
         http.newCall(request).execute().use { response ->
+            // Обязательно сохраняем Set-Cookie (в т.ч. новый _m_h5_tk и _m_h5_tk_enc) в CookieManager
+            val setCookies = response.headers("Set-Cookie")
+            if (setCookies.isNotEmpty()) {
+                val cm = CookieManager.getInstance()
+                val requestUrl = response.request.url.toString()
+                for (sc in setCookies) {
+                    cm.setCookie(requestUrl, sc)
+                }
+                cm.flush()
+            }
+
             val text = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
                 throw MtopException("HTTP ${response.code} от ${request.url.host}")
@@ -144,10 +160,10 @@ class MtopClient(
         }
     }
 
-    private fun refererFor(url: String): String = when {
-        url.contains("1688") -> "https://m.1688.com/"
-        url.contains("goofish") -> "https://www.goofish.com/"
-        else -> "https://m.taobao.com/"
+    private fun originFor(url: String): String = when {
+        url.contains("1688") -> "https://m.1688.com"
+        url.contains("goofish") -> "https://www.goofish.com"
+        else -> "https://m.taobao.com"
     }
 
     private fun enc(value: String): String = URLEncoder.encode(value, "UTF-8")

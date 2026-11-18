@@ -17,6 +17,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -33,8 +34,7 @@ fun WebLoginScreen(
     onClosed: () -> Unit,
     onLoggedIn: () -> Unit = {},
 ) {
-    val settings = ServiceLocator.settings
-    val webViewHolder = remember { arrayOfNulls<WebView>(1) }
+    val webViewState = remember { mutableStateOf<WebView?>(null) }
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -56,8 +56,7 @@ fun WebLoginScreen(
                 )
             }
             TextButton(onClick = {
-                // Попытка нажать на кнопку входа через Alipay на странице площадки
-                webViewHolder[0]?.evaluateJavascript(
+                webViewState.value?.evaluateJavascript(
                     """
                     (function() {
                         var alipayBtn = document.querySelector('a[href\*="alipay"], .alipay-login, [class\*="alipay"]');
@@ -78,7 +77,7 @@ fun WebLoginScreen(
             modifier = Modifier.fillMaxSize(),
             factory = { context ->
                 WebView(context).apply {
-                    webViewHolder[0] = this
+                    webViewState.value = this
                     settings.javaScriptEnabled = true
                     settings.domStorageEnabled = true
                     settings.databaseEnabled = true
@@ -108,7 +107,6 @@ fun WebLoginScreen(
                             request: WebResourceRequest?
                         ): Boolean {
                             val url = request?.url?.toString() ?: return false
-                            // Перехват перехода в приложение Alipay или Taobao
                             if (url.startsWith("alipays://") || url.startsWith("alipay://") || url.startsWith("intent://")) {
                                 return try {
                                     val intent = if (url.startsWith("intent://")) {
@@ -120,7 +118,6 @@ fun WebLoginScreen(
                                     context.startActivity(intent)
                                     true
                                 } catch (\_: Exception) {
-                                    // Если приложение Alipay не установлено, остаёмся в веб-версии
                                     false
                                 }
                             }
@@ -133,7 +130,6 @@ fun WebLoginScreen(
                             val savedLogin = ServiceLocator.settings.savedLogin.replace("'", "\\'")
                             val savedPass = ServiceLocator.settings.savedPassword.replace("'", "\\'")
 
-                            // Автоподстановка и отслеживание ввода логина и пароля
                             val script = """
                                 (function() {
                                     var loginInput = document.querySelector('input[name="fm-login-id"], input[id\*="login-id"], input[type="text"], input[type="tel"]');

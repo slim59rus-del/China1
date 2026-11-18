@@ -9,6 +9,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -39,35 +40,56 @@ fun WebLoginScreen(
     val context = LocalContext.current
     val webViewState = remember { mutableStateOf<WebView?>(null) }
 
+    BackHandler(enabled = true) {
+        val wv = webViewState.value
+        if (wv != null && wv.canGoBack()) {
+            wv.goBack()
+        } else {
+            ServiceLocator.cookies.flush()
+            onClosed()
+        }
+    }
+
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(start = 16.dp, end = 8.dp, top = 22.dp, bottom = 8.dp),
+                .padding(start = 6.dp, end = 6.dp, top = 22.dp, bottom = 6.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
+            TextButton(onClick = {
+                val wv = webViewState.value
+                if (wv != null && wv.canGoBack()) {
+                    wv.goBack()
+                } else {
+                    ServiceLocator.cookies.flush()
+                    onClosed()
+                }
+            }) { Text("← Назад") }
+
             Column(Modifier.weight(1f)) {
                 Text(
-                    text = "Вход: ${marketplace.title}",
+                    text = marketplace.title,
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                 )
-                Text(
-                    text = "Нажмите Alipay для входа через кошелёк или введите номер/пароль.",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
+
             TextButton(onClick = {
                 val webView = webViewState.value ?: return@TextButton
-                // Прямой переход на страницу входа с поддержкой Alipay для выбранной площадки
+                webView.loadUrl(marketplace.loginUrl)
+                Toast.makeText(context, "Форма входа по номеру телефона", Toast.LENGTH_SHORT).show()
+            }) { Text("Телефон") }
+
+            TextButton(onClick = {
+                val webView = webViewState.value ?: return@TextButton
                 val alipayEntryUrl = when (marketplace) {
                     Marketplace.TAOBAO -> "https://taobao.com"
                     Marketplace.XIANYU -> "https://taobao.com"
                     else -> "https://1688.com"
                 }
                 webView.loadUrl(alipayEntryUrl)
-                Toast.makeText(context, "Открыта форма с входом через Alipay (支付宝)", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, "Открыта форма с иконкой Alipay (支付宝)", Toast.LENGTH_SHORT).show()
             }) { Text("Alipay") }
 
             TextButton(onClick = {
@@ -75,7 +97,6 @@ fun WebLoginScreen(
                 onClosed()
             }) { Text("Готово") }
         }
-
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->

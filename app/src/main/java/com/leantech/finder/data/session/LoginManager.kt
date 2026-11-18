@@ -34,6 +34,16 @@ class LoginManager(
         return Marketplace.entries.associateWith { isLoggedIn(it) }
     }
 
+    fun logout(marketplace: Marketplace) {
+        val domains = when (marketplace) {
+            Marketplace.TAOBAO -> listOf("https://taobao.com", "https://taobao.com", "https://taobao.com")
+            Marketplace.XIANYU -> listOf("https://goofish.com", "https://goofish.com")
+            else -> listOf("https://1688.com", "https://1688.com", "https://1688.com")
+        }
+        cookies.clearDomains(domains)
+        settings.markLoggedIn(marketplace, false)
+    }
+
     fun logout() {
         cookies.clear()
         settings.clearSession()

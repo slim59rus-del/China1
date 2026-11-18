@@ -5,15 +5,8 @@ import com.leantech.finder.domain.model.Product
 import com.leantech.finder.domain.model.Seller
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.URLEncoder
 
-/**
- * Разбор ответов площадок.
- *
- * Серверы Taobao / 1688 / 闲鱼 устроены по одинаковой схеме (mtop): данные лежат в data -> список
- * карточек. Точные имена полей у площадок разные и время от времени меняются, поэтому разбор не
- * привязан к одному пути: он рекурсивно обходит JSON и собирает объекты, похожие на карточку
- * товара, по набору известных полей. Такой обход переживает переименование контейнеров.
- */
 object JsonCards {
 
     private val TITLE_KEYS = listOf(
@@ -35,7 +28,7 @@ object JsonCards {
     )
     private val IMAGE_KEYS = listOf(
         "pic_url", "picUrl", "image", "imageUrl", "pic", "mainPic", "img",
-        "coverUrl", "pic_path",
+        "coverUrl", "pic_path", "imgUrl", "imagePath", "thumbUrl",
     )
     private val SELLER_NAME_KEYS = listOf(
         "nick", "sellerNick", "shopName", "companyName", "company", "sellerName",
@@ -57,14 +50,12 @@ object JsonCards {
     )
     private val URL_KEYS = listOf("itemUrl", "detailUrl", "url", "link", "detail_url")
 
-    /** Признаки фабрики/производителя в названии, метках и тегах магазина. */
     private val FACTORY_MARKERS = listOf(
         "工厂", "厂家", "厂商", "源头", "生产", "制造", "制造商", "加工厂", "实业",
         "工贸", "实力商家", "超级工厂", "factory", "manufacturer", "oem", "odm",
         "定制", "批发",
     )
 
-    /** Признаки розничного магазина или посредника. */
     private val RESELLER_MARKERS = listOf(
         "旗舰店", "专营店", "专卖店", "代购", "转卖", "二手", "闲置", "个人",
     )
@@ -115,7 +106,6 @@ object JsonCards {
         val hasSales = firstString(node, SALES_KEYS) != null
         return hasId || hasPrice || hasSales
     }
-
     private fun normalize(node: JSONObject, marketplace: Marketplace, query: String): Product {
         val id = firstString(node, ID_KEYS).orEmpty()
         val title = firstString(node, TITLE_KEYS).orEmpty().trim()
@@ -141,7 +131,7 @@ object JsonCards {
             salesCount = parseCount(salesText),
             salesText = salesText,
             itemUrl = itemUrl(marketplace, id, node, query),
-            imageUrl = firstString(node, IMAGE_KEYS),
+            imageUrl = normalizeImageUrl(extractImageUrl(node)),
             seller = Seller(
                 id = id.takeIf { it.isNotBlank() },
                 name = sellerName,
@@ -154,6 +144,32 @@ object JsonCards {
                 factorySignals = factorySignals,
             ),
         )
+    }
+
+    private fun extractImageUrl(node: JSONObject): String? {
+        firstString(node, IMAGE_KEYS)?.let { return it }
+        val keys = node.keys()
+        while (keys.hasNext()) {
+            val child = node.opt(keys.next())
+            if (child is JSONObject) {
+                firstString(child, IMAGE_KEYS)?.let { return it }
+            }
+        }
+        return null
+    }
+
+    private fun normalizeImageUrl(raw: String?): String? {
+        var url = raw?.trim()?.takeIf { it.isNotBlank() } ?: return null
+        if (url.startsWith("//")) {
+            url = "https:$url"
+        } else if (!url.startsWith("http")) {
+            url = "https://alicdn.com"
+        }
+        val webpSuffix = 95.toChar() + ".webp"
+        if (url.endsWith(webpSuffix)) {
+            url = url.removeSuffix(webpSuffix)
+        }
+        return url
     }
 
     private fun detectFactorySignals(
@@ -170,8 +186,6 @@ object JsonCards {
         val signals = FACTORY_MARKERS.filter { haystack.contains(it.lowercase()) }
         if (reseller.isNotEmpty() && signals.isEmpty()) return emptyList()
 
-        // 1688 по своей природе площадка оптовых фабрик и поставщиков: если прямых признаков нет,
-        // предложение всё равно B2B, и об этом честно сообщается в описании.
         if (signals.isEmpty() && marketplace == Marketplace.ALIBABA_1688) {
             return listOf("оптовое предложение 1688")
         }
@@ -180,27 +194,29 @@ object JsonCards {
 
     private fun itemUrl(marketplace: Marketplace, id: String, node: JSONObject, query: String): String {
         firstString(node, URL_KEYS)?.let { direct ->
+            if (direct.startsWith("//")) return "https:$direct"
             if (direct.startsWith("http")) return direct
         }
         if (id.isBlank()) return marketplace.searchUrlTemplate.format(encode(query))
         return when (marketplace) {
-            Marketplace.TAOBAO -> "https://item.taobao.com/item.htm?id=$id"
-            Marketplace.ALIBABA_1688 -> "https://detail.1688.com/offer/$id.html"
-            Marketplace.XIANYU -> "https://www.goofish.com/item?id=$id"
+            Marketplace.TAOBAO -> "https://taobao.com"
+            Marketplace.ALIBABA_1688 -> "https://1688.com"
+            Marketplace.XIANYU -> "https://goofish.com"
         }
     }
 
     private fun shopUrl(marketplace: Marketplace, node: JSONObject): String? {
         firstString(node, SHOP_URL_KEYS)?.let { direct ->
+            if (direct.startsWith("//")) return "https:$direct"
             if (direct.startsWith("http")) return direct
             if (direct.isNotBlank()) return "https://$direct"
         }
         val member = firstString(node, SELLER_NAME_KEYS)?.takeIf { it.isNotBlank() } ?: return null
         return when (marketplace) {
             Marketplace.TAOBAO ->
-                if (member.length in 1..14) "https://shop$member.taobao.com/" else null
+                if (member.length in 1..14) "https://shop$://taobao.com" else null
             Marketplace.ALIBABA_1688 ->
-                if (member.length in 1..40) "https://$member.1688.com/" else null
+                if (member.length in 1..40) "https://$://1688.com" else null
             Marketplace.XIANYU -> null
         }
     }
@@ -232,50 +248,32 @@ object JsonCards {
                 is String -> if (value.isNotBlank()) return value.trim()
                 is Number -> return value.toString()
                 is Boolean -> return value.toString()
-                is JSONArray -> {
-                    val joined = StringBuilder()
-                    for (index in 0 until value.length()) {
-                        when (val entry = value.opt(index)) {
-                            is String -> joined.append(entry)
-                            is Number -> joined.append(entry)
-                            is JSONObject -> firstString(entry, listOf("text", "title", "name", "value"))
-                                ?.let { joined.append(it) }
-                            else -> Unit
-                        }
-                        if (index < value.length() - 1) joined.append(' ')
-                    }
-                    val text = joined.toString().trim()
-                    if (text.isNotBlank()) return text
+                is JSONObject -> {
+                    val nested = firstString(value, listOf("value", "text", "url", "src", "price"))
+                    if (!nested.isNullOrBlank()) return nested
                 }
-                is JSONObject -> firstString(value, listOf("text", "title", "name", "value", "price", "priceText"))
-                    ?.takeIf { it.isNotBlank() }?.let { return it }
-                else -> Unit
+                is JSONArray -> {
+                    for (index in 0 until value.length()) {
+                        val item = value.opt(index)
+                        if (item is String && item.isNotBlank()) return item.trim()
+                    }
+                }
             }
         }
         return null
     }
 
-    /** «1.2万+人付款» -> 12000, «月销 500» -> 500, «500+» -> 500. */
-    fun parseCount(raw: String?): Int? {
-        val text = raw?.trim().orEmpty()
-        if (text.isEmpty()) return null
-        val match = Regex("""(\d+(?:[.,]\d+)?)\s*(万|千|w|W|k|K)?""").find(text) ?: return null
-        val number = match.groupValues[1].replace(',', '.').toDoubleOrNull() ?: return null
-        val multiplier = when (match.groupValues[2].lowercase()) {
-            "万", "w" -> 10000.0
-            "千", "k" -> 1000.0
-            else -> 1.0
-        }
-        return (number * multiplier).toInt()
+    private fun parsePrice(raw: String): Double? {
+        val match = Regex("""\d+(?:[.,]\d+)?""").find(raw) ?: return null
+        return match.value.replace(',', '.').toDoubleOrNull()
     }
 
-    /** «¥12.50» -> 12.5, «от 5,80 юаней» -> 5.8, «12.5-18.0» -> 12.5. */
-    fun parsePrice(raw: String?): Double? {
-        val text = raw?.trim().orEmpty()
-        if (text.isEmpty()) return null
-        val match = Regex("""(\d+(?:[.,]\d+)?)""").find(text) ?: return null
-        return match.groupValues[1].replace(',', '.').toDoubleOrNull()
+    private fun parseCount(raw: String?): Int? {
+        if (raw.isNullOrBlank()) return null
+        val match = Regex("""\d+""").find(raw) ?: return null
+        return match.value.toIntOrNull()
     }
 
-    private fun encode(value: String): String = java.net.URLEncoder.encode(value, "UTF-8")
+    private fun encode(text: String): String =
+        runCatching { URLEncoder.encode(text, "UTF-8") }.getOrDefault(text)
 }

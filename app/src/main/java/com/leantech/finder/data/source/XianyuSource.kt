@@ -1,13 +1,17 @@
 package com.leantech.finder.data.source
 
+import android.content.Context
 import com.leantech.finder.data.net.MtopClient
 import com.leantech.finder.data.net.MtopException
+import com.leantech.finder.data.net.WebViewSearchFetcher
 import com.leantech.finder.data.prefs.SettingsStore
+import com.leantech.finder.di.ServiceLocator
 import com.leantech.finder.domain.model.Marketplace
 import com.leantech.finder.domain.model.SearchRequest
 import com.leantech.finder.domain.model.SortOption
 import com.leantech.finder.domain.model.SourceProblem
 import org.json.JSONObject
+import java.net.URLEncoder
 
 /**
  * 闲鱼 (Idle Fish / Goofish) — площадка частных объявлений и заводских излишков.
@@ -15,11 +19,29 @@ import org.json.JSONObject
 class XianyuSource(
     private val mtop: MtopClient,
     private val settings: SettingsStore,
+    private val context: Context? = null,
 ) : MarketplaceSource {
 
     override val marketplace = Marketplace.XIANYU
 
     override suspend fun search(query: String, request: SearchRequest): SourceResult {
+        // 1. Основной путь без прокси: скрытый WebView с авторизованными куками Goofish (обходит RGV587_ERROR)
+        val ctx = context ?: runCatching { ServiceLocator.appContext }.getOrNull()
+        if (ctx != null && settings.proxyBaseUrl.isBlank()) {
+            val webJson = WebViewSearchFetcher.fetchJsonOrDom(
+                context = ctx,
+                searchUrl = buildGoofishSearchUrl(query),
+            )
+            if (webJson != null) {
+                val webProducts = JsonCards.extract(webJson, marketplace, query)
+                    .take(request.limitPerMarketplace)
+                if (webProducts.isNotEmpty()) {
+                    return SourceResult(webProducts)
+                }
+            }
+        }
+
+        // 2. Резервный путь: MTOP API
         val data = JSONObject().apply {
             put("pageNumber", 1)
             put("keyword", query)
@@ -63,6 +85,12 @@ class XianyuSource(
             )
         }
     }
+
+    private fun buildGoofishSearchUrl(query: String): String {
+        val encoded = URLEncoder.encode(query, "UTF-8")
+        return "https://goofish.com" + encoded
+    }
+
     private fun sortField(request: SearchRequest): String = when (request.sort) {
         SortOption.PRICE_ASC, SortOption.PRICE_DESC -> "price"
         else -> ""

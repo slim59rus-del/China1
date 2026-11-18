@@ -1,5 +1,6 @@
 package com.leantech.finder.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -8,14 +9,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -24,10 +26,16 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.leantech.finder.domain.model.Marketplace
 import com.leantech.finder.ui.AppViewModel
@@ -37,6 +45,12 @@ import com.leantech.finder.ui.components.SectionTitle
 
 @Composable
 fun SettingsScreen(state: UiState, viewModel: AppViewModel) {
+    BackHandler(enabled = true) {
+        viewModel.openSearch()
+    }
+
+    var rateText by remember(state.cnyRate) { mutableStateOf(state.cnyRate.toString()) }
+
     Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         Row(
             Modifier
@@ -47,7 +61,7 @@ fun SettingsScreen(state: UiState, viewModel: AppViewModel) {
             IconButton(onClick = viewModel::openSearch) {
                 Icon(Icons.Filled.ArrowBack, contentDescription = "Назад")
             }
-            Text("Настройки", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+            Text("Настройки и аккаунты", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
         }
 
         Column(
@@ -59,43 +73,90 @@ fun SettingsScreen(state: UiState, viewModel: AppViewModel) {
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(Modifier.padding(14.dp)) {
-                    SectionTitle("Аккаунты площадок")
-                    Spacer(Modifier.height(8.dp))
+                    SectionTitle("Аккаунты площадок (Alipay / Телефон)")
+                    Spacer(Modifier.height(6.dp))
                     Text(
-                        text = "Приложение не хранит логин и пароль. Вход выполняется на официальной " +
-                            "странице площадки, а приложение сохраняет только полученную сессию — " +
-                            "после входа поиск идёт уже от вашего имени.",
+                        text = "Управляйте входом для каждой площадки отдельно. Сессия сохраняется после выхода из приложения.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                     Spacer(Modifier.height(10.dp))
-                    Marketplace.entries.forEach { marketplace ->
-                        Row(
-                            Modifier.fillMaxWidth().padding(vertical = 6.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Column(Modifier.weight(1f)) {
-                                Text(marketplace.title, style = MaterialTheme.typography.bodyMedium)
+
+                    Marketplace.entries.forEachIndexed { idx, marketplace ->
+                        if (idx > 0) {
+                            HorizontalDivider(
+                                modifier = Modifier.padding(vertical = 8.dp),
+                                color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f),
+                            )
+                        }
+                        val loggedIn = state.loginStatus[marketplace] == true
+                        Column(Modifier.fillMaxWidth()) {
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
                                 Text(
-                                    text = marketplace.loginUrl,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    text = marketplace.title,
+                                    style = MaterialTheme.typography.titleSmall,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.weight(1f),
                                 )
+                                if (loggedIn) {
+                                    InfoChip(text = "Активен")
+                                } else {
+                                    InfoChip(
+                                        text = "Не выполнен вход",
+                                        container = MaterialTheme.colorScheme.surfaceVariant,
+                                        content = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
                             }
-                            if (state.loginStatus[marketplace] == true) {
-                                InfoChip(text = "вход выполнен")
-                            } else {
-                                OutlinedButton(onClick = { viewModel.openLogin(marketplace) }) {
-                                    Text("Войти")
+                            Spacer(Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (loggedIn) {
+                                    OutlinedButton(onClick = { viewModel.reloginMarketplace(marketplace) }) {
+                                        Text("Зайти заново")
+                                    }
+                                    TextButton(onClick = { viewModel.logoutMarketplace(marketplace) }) {
+                                        Text("Выйти", color = MaterialTheme.colorScheme.error)
+                                    }
+                                } else {
+                                    Button(onClick = { viewModel.openLogin(marketplace) }) {
+                                        Text("Войти (Alipay / Тел.)")
+                                    }
                                 }
                             }
                         }
                     }
-                    Spacer(Modifier.height(8.dp))
+
+                    Spacer(Modifier.height(10.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        OutlinedButton(onClick = viewModel::refreshLoginStatus) { Text("Проверить вход") }
+                        OutlinedButton(onClick = viewModel::refreshLoginStatus) { Text("Обновить статусы") }
                         OutlinedButton(onClick = viewModel::logout) { Text("Выйти везде") }
                     }
+                }
+            }
+            Card(
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(Modifier.padding(14.dp)) {
+                    SectionTitle("Валюта и расчёт цены")
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
+                        value = rateText,
+                        onValueChange = { input ->
+                            rateText = input
+                            input.replace(',', '.').toFloatOrNull()?.let { viewModel.setCnyRate(it) }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Курс 1 юаня (¥) в рублях (₽)") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                        supportingText = {
+                            Text("Используется для расчёта ориентировочной стоимости в рублях на карточках товаров.")
+                        },
+                    )
                 }
             }
 
@@ -104,42 +165,22 @@ fun SettingsScreen(state: UiState, viewModel: AppViewModel) {
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Column(Modifier.padding(14.dp)) {
-                    SectionTitle("Перевод")
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = state.translatorEndpoint,
-                        onValueChange = viewModel::setTranslatorEndpoint,
-                        modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Адрес сервиса перевода") },
-                        singleLine = true,
-                        supportingText = {
-                            Text("Пусто — используется публичный переводчик. Если он недоступен из вашей сети, укажите свой адрес с тем же форматом ответа.")
-                        },
-                    )
+                    SectionTitle("Перевод и поиск")
                     Spacer(Modifier.height(8.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Column(Modifier.weight(1f)) {
                             Text("Переводить названия товаров", style = MaterialTheme.typography.bodyMedium)
                             Text(
-                                text = "Название каждой карточки переводится на русский (китайский оригинал остаётся ниже).",
+                                text = "Прямой перевод с китайского на русский (китайский оригинал остаётся ниже).",
                                 style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                         Switch(checked = state.translateTitles, onCheckedChange = viewModel::setTranslateTitles)
                     }
-                }
-            }
-
-            Card(
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Column(Modifier.padding(14.dp)) {
-                    SectionTitle("Поиск")
-                    Spacer(Modifier.height(8.dp))
+                    Spacer(Modifier.height(10.dp))
                     Text(
-                        text = "Сколько товаров брать с каждой площадки: ${state.limitPerMarketplace}",
+                        text = "Товаров с каждой площадки: ${state.limitPerMarketplace}",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     Slider(
@@ -150,23 +191,23 @@ fun SettingsScreen(state: UiState, viewModel: AppViewModel) {
                     )
                     Spacer(Modifier.height(8.dp))
                     OutlinedTextField(
+                        value = state.translatorEndpoint,
+                        onValueChange = viewModel::setTranslatorEndpoint,
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text("Адрес сервиса перевода (необязательно)") },
+                        singleLine = true,
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    OutlinedTextField(
                         value = state.proxyBaseUrl,
                         onValueChange = viewModel::setProxyBaseUrl,
                         modifier = Modifier.fillMaxWidth(),
-                        label = { Text("Адрес своего сервера подписи (необязательно)") },
+                        label = { Text("Адрес сервера подписи (необязательно)") },
                         singleLine = true,
-                        supportingText = {
-                            Text("Площадки подписывают запросы одноразовым токеном. Если прямой запрос не проходит, укажите адрес своего сервера — он подпишет запрос за приложение.")
-                        },
                     )
                 }
             }
 
-            Text(
-                text = "Версия 1.0 · поиск по Taobao, 1688 и 闲鱼 с переводом и описанием продавца",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
             Spacer(Modifier.height(24.dp))
         }
     }

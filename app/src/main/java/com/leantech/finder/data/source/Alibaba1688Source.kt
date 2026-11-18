@@ -4,6 +4,7 @@ import com.leantech.finder.data.net.CookieStore
 import com.leantech.finder.data.net.MtopClient
 import com.leantech.finder.data.net.MtopException
 import com.leantech.finder.data.prefs.SettingsStore
+import com.leantech.finder.di.ServiceLocator
 import com.leantech.finder.domain.model.Marketplace
 import com.leantech.finder.domain.model.Product
 import com.leantech.finder.domain.model.SearchRequest
@@ -31,10 +32,12 @@ class Alibaba1688Source(
         .followRedirects(true)
         .build()
 
+    private fun resolveCookies(): CookieStore = cookies ?: ServiceLocator.cookies
+
     override suspend fun search(query: String, request: SearchRequest): SourceResult {
         var lastError: String? = null
 
-        // 1. Актуальный мобильный MTOP API 1688
+        // 1. Актуальные мобильные MTOP API 1688
         for (apiName in MOBILE_SEARCH_APIS) {
             try {
                 val response = mtop.call(
@@ -46,7 +49,7 @@ class Alibaba1688Source(
                 )
                 val products = JsonCards.extract(response, marketplace, query)
                 if (products.isNotEmpty()) {
-                    return SourceResult(products)
+                    return SourceResult(products.take(request.limitPerMarketplace))
                 }
                 val ret = extractRetCode(response)
                 if (!ret.isNullOrBlank() && !ret.contains("API_NOT_FOUNDED")) {
@@ -57,20 +60,28 @@ class Alibaba1688Source(
             }
         }
 
-        // 2. Резервный путь: загрузка мобильной страницы поиска ://1688.com с куками сессии
+        // 2. Прямой JSON-эндпоинт ://1688.com с авторизованными куками
+        val jsonServiceProducts = fetchFromSearchService(query, request)
+        if (jsonServiceProducts.isNotEmpty()) {
+            return SourceResult(jsonServiceProducts)
+        }
+
+        // 3. Мобильная страница поиска ://1688.com (извлечение window.__INIT_DATA)
         val htmlProducts = fetchFromMobileSearchPage(query, request)
         if (htmlProducts.isNotEmpty()) {
             return SourceResult(htmlProducts)
         }
 
+        val errorMsg = if (!lastError.isNullOrBlank()) {
+            "1688 вернул пустой список (" + lastError + ")"
+        } else {
+            "1688 вернул пустой список: попробуйте обновить вход или открыть поиск на сайте."
+        }
+
         return SourceResult(
             problem = SourceProblem(
                 marketplace = marketplace,
-                message = if (!lastError.isNullOrBlank()) {
-                    "1688 вернул пустой список ($lastError)"
-                } else {
-                    "1688 вернул пустой список: попробуйте обновить вход или открыть поиск на сайте."
-                },
+                message = errorMsg,
                 needsLogin = true,
                 webFallbackUrl = webSearchUrl(query),
             )
@@ -90,6 +101,42 @@ class Alibaba1688Source(
             put("charset", "utf-8")
         }
     }
+    private suspend fun fetchFromSearchService(
+        query: String,
+        request: SearchRequest,
+    ): List<Product> = withContext(Dispatchers.IO) {
+        runCatching {
+            val encoded = URLEncoder.encode(query, "UTF-8")
+            val sortSuffix = when (request.sort) {
+                SortOption.SALES_DESC -> "&sortType=va_rmdarkgmv&descendOrder=true"
+                SortOption.PRICE_ASC -> "&sortType=price&descendOrder=false"
+                SortOption.PRICE_DESC -> "&sortType=price&descendOrder=true"
+                SortOption.RELEVANCE -> ""
+            }
+            val url = "https://1688.com" +
+                "?beginPage=1&pageSize=" + request.limitPerMarketplace +
+                "&keywords=" + encoded + sortSuffix
+
+            val cookieStr = resolveCookies().cookieHeader(url)
+            val reqBuilder = Request.Builder()
+                .url(url)
+                .header("User-Agent", MtopClient.MOBILE_UA)
+                .header("Accept", "application/json, text/plain, */*")
+                .header("Accept-Language", "zh-CN,zh;q=0.9")
+                .header("Referer", "https://1688.com")
+
+            if (cookieStr.isNotBlank()) {
+                reqBuilder.header("Cookie", cookieStr)
+            }
+
+            webClient.newCall(reqBuilder.build()).execute().use { resp ->
+                val body = resp.body?.string()?.trim().orEmpty()
+                if (body.isBlank() || !body.startsWith("{")) return@use emptyList()
+                val json = JSONObject(body)
+                JsonCards.extract(json, marketplace, query).take(request.limitPerMarketplace)
+            }
+        }.getOrDefault(emptyList())
+    }
 
     private suspend fun fetchFromMobileSearchPage(
         query: String,
@@ -103,15 +150,16 @@ class Alibaba1688Source(
                 SortOption.PRICE_DESC -> "&sortType=price&descendOrder=true"
                 SortOption.RELEVANCE -> ""
             }
-            val url = "https://://1688.com/offer_search/-6D7033.html?keywords=$encoded$sortParam"
+            val url = "https://1688.comoffer_search/-6D7033.html?keywords=" + encoded + sortParam
+            val cookieStr = resolveCookies().cookieHeader(url)
+
             val reqBuilder = Request.Builder()
                 .url(url)
                 .header("User-Agent", MtopClient.MOBILE_UA)
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                 .header("Accept-Language", "zh-CN,zh;q=0.9")
-                .header("Referer", "https://://1688.com/")
+                .header("Referer", "https://1688.com")
 
-            val cookieStr = cookies?.cookieHeader(url).orEmpty()
             if (cookieStr.isNotBlank()) {
                 reqBuilder.header("Cookie", cookieStr)
             }

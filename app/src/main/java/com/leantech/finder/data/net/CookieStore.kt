@@ -76,6 +76,20 @@ class CookieStore(
         cookieManager.flush()
     }
 
+    fun clearDomains(domains: List<String>) {
+        settings.removeCookieBackupsFor(domains)
+        for (domain in domains) {
+            val raw = cookieManager.getCookie(domain).orEmpty()
+            for (part in raw.split(';')) {
+                val cookieName = part.trim().substringBefore('=')
+                if (cookieName.isNotEmpty()) {
+                    cookieManager.setCookie(domain, "$cookieName=; Max-Age=0")
+                }
+            }
+        }
+        cookieManager.flush()
+    }
+
     fun clear() {
         cookieManager.removeAllCookies(null)
         cookieManager.flush()

@@ -1,5 +1,6 @@
 package com.leantech.finder.data.net
 
+import android.net.Uri
 import android.webkit.CookieManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -14,11 +15,6 @@ class MtopException(message: String, val retCodes: List<String> = emptyList()) :
 /**
  * Клиент h5api (mtop): сам подписывает запрос и повторяет его один раз, если сервер вернул
  * просроченный токен (в этом случае площадка успевает выдать новый _m_h5_tk).
- *
- * Два режима:
- *  - напрямую (proxyBaseUrl пустой) — приложение говорит с площадкой от своего имени;
- *  - через свой сервер (proxyBaseUrl заполнен) — подпись делает сервер, приложение только
- *    передаёт api и data. Это обычный путь для рабочей сборки.
  */
 class MtopClient(
     private val cookies: CookieStore,
@@ -55,7 +51,7 @@ class MtopClient(
 
         val body = get(url)
         val json = runCatching { JSONObject(body) }.getOrElse {
-            throw MtopException("Ответ площадки не является JSON: ${body.take(180)}")
+            throw MtopException("Ответ площадки не является JSON: " + body.take(180))
         }
         val ret = json.optJSONArray("ret")?.let { array ->
             (0 until array.length()).map { array.optString(it) }
@@ -75,8 +71,6 @@ class MtopClient(
         }
         if (body.contains("\"SUCCESS::")) return json
 
-        // Часть ответов приходит с ret=SUCCESS, но пустым содержимым — отдаём как есть,
-        // разбор сделает извлекатель карточек.
         return json
     }
 
@@ -84,7 +78,6 @@ class MtopClient(
         if (host.contains("1688")) "1688 не отдал результаты: войдите в аккаунт 1688 в приложении"
         else if (host.contains("goofish")) "闲鱼 не отдал результаты: войдите в аккаунт 闲鱼 в приложении"
         else "Taobao не отдал результаты: войдите в аккаунт Taobao в приложении"
-
     private fun directUrl(
         host: String,
         api: String,
@@ -93,12 +86,13 @@ class MtopClient(
         extraQuery: Map<String, String>,
     ): String {
         val timestamp = System.currentTimeMillis().toString()
+        val effectiveAppKey = extraQuery["appKey"] ?: appKey
         val token = cookies.read(host, "_m_h5_tk")?.substringBefore('_').orEmpty()
-        val sign = Sign.mtop(token, timestamp, appKey, payload)
+        val sign = Sign.mtop(token, timestamp, effectiveAppKey, payload)
 
         val params = LinkedHashMap<String, String>()
         params["jsv"] = "2.7.2"
-        params["appKey"] = appKey
+        params["appKey"] = effectiveAppKey
         params["t"] = timestamp
         params["sign"] = sign
         params["api"] = api
@@ -107,11 +101,16 @@ class MtopClient(
         params["dataType"] = "json"
         params["H5Request"] = "true"
         params["data"] = payload
-        params.putAll(extraQuery)
-
-        return "$host/h5/$api/$version/?" + params.entries.joinToString("&") { (key, value) ->
-            "$key=${enc(value)}"
+        for ((k, v) in extraQuery) {
+            if (k != "appKey") {
+                params[k] = v
+            }
         }
+
+        val queryString = params.entries.joinToString("&") { (key, value) ->
+            key + "=" + enc(value)
+        }
+        return host + "/h5/" + api + "/" + version + "/?" + queryString
     }
 
     private fun proxyUrl(
@@ -133,7 +132,7 @@ class MtopClient(
             .header("User-Agent", MOBILE_UA)
             .header("Accept", "application/json, text/plain, */*")
             .header("Origin", origin)
-            .header("Referer", "$origin/")
+            .header("Referer", origin + "/")
             .apply {
                 val cookie = cookies.cookieHeader(url)
                 if (cookie.isNotBlank()) header("Cookie", cookie)
@@ -141,22 +140,35 @@ class MtopClient(
             .build()
 
         http.newCall(request).execute().use { response ->
-            // Обязательно сохраняем Set-Cookie (в т.ч. новый _m_h5_tk и _m_h5_tk_enc) в CookieManager
             val setCookies = response.headers("Set-Cookie")
             if (setCookies.isNotEmpty()) {
                 val cm = CookieManager.getInstance()
                 val requestUrl = response.request.url.toString()
+                val rootUrl = rootDomainUrl(requestUrl)
                 for (sc in setCookies) {
                     cm.setCookie(requestUrl, sc)
+                    if (rootUrl != null) {
+                        cm.setCookie(rootUrl, sc)
+                    }
                 }
                 cm.flush()
             }
 
             val text = response.body?.string().orEmpty()
             if (!response.isSuccessful) {
-                throw MtopException("HTTP ${response.code} от ${request.url.host}")
+                throw MtopException("HTTP " + response.code + " от " + request.url.host)
             }
             return text
+        }
+    }
+
+    private fun rootDomainUrl(url: String): String? {
+        val host = Uri.parse(url).host?.lowercase() ?: return null
+        return when {
+            host.endsWith("1688.com") -> "https://1688.com"
+            host.endsWith("taobao.com") -> "https://taobao.com"
+            host.endsWith("goofish.com") -> "https://goofish.com"
+            else -> null
         }
     }
 

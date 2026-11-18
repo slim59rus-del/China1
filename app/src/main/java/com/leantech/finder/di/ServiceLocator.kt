@@ -15,7 +15,6 @@ import com.leantech.finder.data.translate.TranslatorChain
 import com.leantech.finder.data.translate.WebTranslator
 import com.leantech.finder.domain.seller.SellerSummarizer
 
-/** Простой контейнер зависимостей: один экземпляр на процесс. */
 object ServiceLocator {
 
     lateinit var settings: SettingsStore
@@ -32,7 +31,7 @@ object ServiceLocator {
 
         val appContext = context.applicationContext
         settings = SettingsStore(appContext)
-        cookies = CookieStore()
+        cookies = CookieStore(settings)
         login = LoginManager(cookies, settings)
 
         val mtop = MtopClient(cookies)

@@ -41,7 +41,7 @@ enum class Marketplace(
         title = "闲鱼 Idle Fish",
         chineseName = "闲鱼",
         searchUrlTemplate = "https://www.goofish.com/search?q=%s",
-        loginUrl = "https://taobao.com",
+        loginUrl = "https://goofish.com",
         apiHost = "https://h5api.m.goofish.com",
         needsLogin = true,
         accentHex = "FFF2C14E",

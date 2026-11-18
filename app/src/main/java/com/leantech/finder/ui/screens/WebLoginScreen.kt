@@ -53,18 +53,21 @@ fun WebLoginScreen(
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "Поставьте галочку согласия внизу страницы и нажмите Alipay.",
+                    text = "Нажмите Alipay для входа через кошелёк или введите номер/пароль.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             TextButton(onClick = {
-                val jsClickAlipay = "(function(){var cb=document.querySelectorAll('input[type=\"checkbox\"]');for(var i=0;i<cb.length;i++){if(!cb[i].checked)cb[i].click();}var els=document.querySelectorAll('a,button,div,span');for(var j=0;j<els.length;j++){var el=els[j];var h=(el.getAttribute('href')||'').toLowerCase();var c=(el.className||'').toString().toLowerCase();var t=(el.innerText||'').trim();if(h.indexOf('privacy')!==-1||h.indexOf('agreement')!==-1)continue;if(c.indexOf('alipay-login')!==-1||c.indexOf('login-alipay')!==-1||h.indexOf('://alipay.com')!==-1||h.indexOf('://alipay.com')!==-1||t==='支付宝登录'||t==='支付宝快捷登录'){el.click();return 'OK';}}return 'NONE';})();"
-                webViewState.value?.evaluateJavascript(jsClickAlipay) { res ->
-                    if (res != null && res.contains("NONE")) {
-                        Toast.makeText(context, "Нажмите на иконку Alipay на странице ниже", Toast.LENGTH_SHORT).show()
-                    }
+                val webView = webViewState.value ?: return@TextButton
+                // Прямой переход на страницу входа с поддержкой Alipay для выбранной площадки
+                val alipayEntryUrl = when (marketplace) {
+                    Marketplace.TAOBAO -> "https://taobao.com"
+                    Marketplace.XIANYU -> "https://taobao.com"
+                    else -> "https://1688.com"
                 }
+                webView.loadUrl(alipayEntryUrl)
+                Toast.makeText(context, "Открыта форма с входом через Alipay (支付宝)", Toast.LENGTH_SHORT).show()
             }) { Text("Alipay") }
 
             TextButton(onClick = {

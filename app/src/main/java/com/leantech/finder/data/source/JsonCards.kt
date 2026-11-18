@@ -34,6 +34,9 @@ object JsonCards {
         "nick", "sellerNick", "shopName", "companyName", "company", "sellerName",
         "loginId", "userNick", "memberId", "nickName", "userName", "seller_nick",
     )
+    private val SELLER_ID_KEYS = listOf(
+        "userId", "sellerId", "seller_id", "user_id", "memberId", "companyId", "shopId",
+    )
     private val SHOP_URL_KEYS = listOf(
         "shopLink", "shopUrl", "shop_url", "sellerUrl", "companyUrl", "storeUrl",
         "homePage", "sellerUrlPC",
@@ -106,12 +109,14 @@ object JsonCards {
         val hasSales = firstString(node, SALES_KEYS) != null
         return hasId || hasPrice || hasSales
     }
+
     private fun normalize(node: JSONObject, marketplace: Marketplace, query: String): Product {
         val id = firstString(node, ID_KEYS).orEmpty()
-        val title = firstString(node, TITLE_KEYS).orEmpty().trim()
+        val title = cleanHtml(firstString(node, TITLE_KEYS).orEmpty()).trim()
         val salesText = firstString(node, SALES_KEYS)
         val priceText = firstString(node, PRICE_KEYS).orEmpty()
         val sellerName = firstString(node, SELLER_NAME_KEYS).orEmpty()
+        val sellerId = firstString(node, SELLER_ID_KEYS)
         val tags = collectTags(node)
         val years = parseCount(firstString(node, YEARS_KEYS))
         val factorySignals = detectFactorySignals(
@@ -133,9 +138,9 @@ object JsonCards {
             itemUrl = itemUrl(marketplace, id, node, query),
             imageUrl = normalizeImageUrl(extractImageUrl(node)),
             seller = Seller(
-                id = id.takeIf { it.isNotBlank() },
+                id = sellerId?.takeIf { it.isNotBlank() } ?: id.takeIf { it.isNotBlank() },
                 name = sellerName,
-                shopUrl = shopUrl(marketplace, node),
+                shopUrl = shopUrl(marketplace, node, sellerName, sellerId),
                 location = firstString(node, LOCATION_KEYS),
                 rating = firstString(node, RATING_KEYS),
                 yearsOnPlatform = years,
@@ -145,7 +150,6 @@ object JsonCards {
             ),
         )
     }
-
     private fun extractImageUrl(node: JSONObject): String? {
         firstString(node, IMAGE_KEYS)?.let { return it }
         val keys = node.keys()
@@ -163,7 +167,7 @@ object JsonCards {
         if (url.startsWith("//")) {
             url = "https:$url"
         } else if (!url.startsWith("http")) {
-            url = "https://alicdn.com"
+            url = "https://alicdn.com{url.trimStart('/')}"
         }
         val webpSuffix = 95.toChar() + ".webp"
         if (url.endsWith(webpSuffix)) {
@@ -194,73 +198,99 @@ object JsonCards {
 
     private fun itemUrl(marketplace: Marketplace, id: String, node: JSONObject, query: String): String {
         firstString(node, URL_KEYS)?.let { direct ->
-            if (direct.startsWith("//")) return "https:$direct"
-            if (direct.startsWith("http")) return direct
+            val clean = direct.trim()
+            if (clean.startsWith("//")) return "https:$clean"
+            if (clean.startsWith("http")) return clean
         }
-        if (id.isBlank()) return marketplace.searchUrlTemplate.format(encode(query))
-        return when (marketplace) {
-            Marketplace.TAOBAO -> "https://taobao.com"
-            Marketplace.ALIBABA_1688 -> "https://1688.com"
-            Marketplace.XIANYU -> "https://goofish.com"
-        }
-    }
-
-    private fun shopUrl(marketplace: Marketplace, node: JSONObject): String? {
-        firstString(node, SHOP_URL_KEYS)?.let { direct ->
-            if (direct.startsWith("//")) return "https:$direct"
-            if (direct.startsWith("http")) return direct
-            if (direct.isNotBlank()) return "https://$direct"
-        }
-        val member = firstString(node, SELLER_NAME_KEYS)?.takeIf { it.isNotBlank() } ?: return null
-        return when (marketplace) {
-            Marketplace.TAOBAO ->
-                if (member.length in 1..14) "https://shop$://taobao.com" else null
-            Marketplace.ALIBABA_1688 ->
-                if (member.length in 1..40) "https://$://1688.com" else null
-            Marketplace.XIANYU -> null
-        }
-    }
-
-    private fun collectTags(node: JSONObject): List<String> {
-        val tags = LinkedHashSet<String>()
-        for (key in TAG_KEYS) {
-            val value = node.opt(key) ?: continue
-            when (value) {
-                is JSONArray -> for (index in 0 until value.length()) {
-                    when (val entry = value.opt(index)) {
-                        is String -> if (entry.isNotBlank()) tags.add(entry)
-                        is JSONObject -> firstString(entry, listOf("text", "title", "name", "label", "iconText"))
-                            ?.takeIf { it.isNotBlank() }?.let { tags.add(it) }
-                        else -> Unit
-                    }
-                }
-                is String -> if (value.isNotBlank()) tags.add(value)
-                else -> Unit
+        val numericId = id.filter { it.isDigit() }
+        if (numericId.isNotEmpty()) {
+            return when (marketplace) {
+                Marketplace.TAOBAO -> "https://taobao.com"
+                Marketplace.ALIBABA_1688 -> "https://1688.com"
+                Marketplace.XIANYU -> "https://goofish.com"
             }
         }
-        return tags.toList()
+        return marketplace.searchUrlTemplate.format(encode(query))
+    }
+
+    private fun shopUrl(
+        marketplace: Marketplace,
+        node: JSONObject,
+        sellerName: String,
+        sellerId: String?,
+    ): String? {
+        firstString(node, SHOP_URL_KEYS)?.let { direct ->
+            val clean = direct.trim()
+            if (clean.startsWith("//")) return "https:$clean"
+            if (clean.startsWith("http")) return clean
+        }
+        val cleanSellerId = sellerId?.filter { it.isDigit() }.orEmpty()
+        if (cleanSellerId.isNotEmpty()) {
+            return when (marketplace) {
+                Marketplace.TAOBAO -> "https://shop$://taobao.com"
+                Marketplace.ALIBABA_1688 -> "https://1688.com"
+                Marketplace.XIANYU -> "https://goofish.com"
+            }
+        }
+        if (sellerName.isNotBlank()) {
+            val encodedSeller = encode(sellerName)
+            return when (marketplace) {
+                Marketplace.TAOBAO -> "https://taobao.com"
+                Marketplace.ALIBABA_1688 -> "https://1688.com"
+                Marketplace.XIANYU -> "https://goofish.com"
+            }
+        }
+        return null
     }
 
     private fun firstString(node: JSONObject, keys: List<String>): String? {
         for (key in keys) {
             if (!node.has(key)) continue
-            when (val value = node.opt(key)) {
-                is String -> if (value.isNotBlank()) return value.trim()
+            val value = node.opt(key) ?: continue
+            when (value) {
+                is String -> if (value.isNotBlank() && value != "null") return value
                 is Number -> return value.toString()
-                is Boolean -> return value.toString()
                 is JSONObject -> {
-                    val nested = firstString(value, listOf("value", "text", "url", "src", "price"))
-                    if (!nested.isNullOrBlank()) return nested
-                }
-                is JSONArray -> {
-                    for (index in 0 until value.length()) {
-                        val item = value.opt(index)
-                        if (item is String && item.isNotBlank()) return item.trim()
-                    }
+                    val nested = value.optString("text")
+                        .ifBlank { value.optString("value") }
+                        .ifBlank { value.optString("price") }
+                        .ifBlank { value.optString("name") }
+                    if (nested.isNotBlank()) return nested
                 }
             }
         }
         return null
+    }
+
+    private fun collectTags(node: JSONObject): List<String> {
+        val result = LinkedHashSet<String>()
+        for (key in TAG_KEYS) {
+            val raw = node.opt(key) ?: continue
+            when (raw) {
+                is JSONArray -> {
+                    for (i in 0 until raw.length()) {
+                        val el = raw.opt(i)
+                        when (el) {
+                            is String -> if (el.isNotBlank()) result.add(el.trim())
+                            is JSONObject -> {
+                                val text = el.optString("text")
+                                    .ifBlank { el.optString("title") }
+                                    .ifBlank { el.optString("name") }
+                                    .ifBlank { el.optString("value") }
+                                if (text.isNotBlank()) result.add(text.trim())
+                            }
+                        }
+                    }
+                }
+                is String -> {
+                    raw.split(',', ';', '|')
+                        .map { it.trim() }
+                        .filter { it.isNotEmpty() }
+                        .forEach { result.add(it) }
+                }
+            }
+        }
+        return result.toList()
     }
 
     private fun parsePrice(raw: String): Double? {
@@ -270,10 +300,16 @@ object JsonCards {
 
     private fun parseCount(raw: String?): Int? {
         if (raw.isNullOrBlank()) return null
-        val match = Regex("""\d+""").find(raw) ?: return null
-        return match.value.toIntOrNull()
+        val clean = raw.trim()
+        val match = Regex("""(\d+(?:[.,]\d+)?)\s*(万|w|W)?""").find(clean) ?: return null
+        val num = match.groupValues.getOrNull(1)?.replace(',', '.')?.toDoubleOrNull() ?: return null
+        val suffix = match.groupValues.getOrNull(2).orEmpty()
+        val multiplier = if (suffix.isNotEmpty()) 10_000.0 else 1.0
+        return (num * multiplier).toInt()
     }
 
-    private fun encode(text: String): String =
-        runCatching { URLEncoder.encode(text, "UTF-8") }.getOrDefault(text)
+    private fun cleanHtml(text: String): String =
+        text.replace(Regex("<[^>]*>"), "").replace("&amp;", "&").replace("&quot;", "\"")
+
+    private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
 }

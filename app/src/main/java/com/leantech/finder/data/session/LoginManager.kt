@@ -11,13 +11,15 @@ class LoginManager(
 
     fun loginUrl(marketplace: Marketplace): String = marketplace.loginUrl
 
-    /\*\* Проверка по признакам живой сессии — конкретные имена cookie площадки. \*/
     fun isLoggedIn(marketplace: Marketplace): Boolean {
         val host = marketplace.apiHost
+        val u = 95.toChar()
+        val mh5tk = "${u}m${u}h5${u}tk"
+
         val alive = when (marketplace) {
-            Marketplace.TAOBAO -> cookies.has(host, "cookie2") && cookies.has(host, "\_m\_h5\_tk")
-            Marketplace.ALIBABA\_1688 -> cookies.has(host, "cookie2") || cookies.has(host, "tracknick")
+            Marketplace.TAOBAO -> cookies.has(host, "cookie2") && cookies.has(host, mh5tk)
             Marketplace.XIANYU -> cookies.has(host, "cookie2") || cookies.has(host, "unb")
+            else -> cookies.has(host, "cookie2") || cookies.has(host, "tracknick")
         }
         if (alive) {
             settings.markLoggedIn(marketplace, true)

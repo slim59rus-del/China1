@@ -7,14 +7,10 @@ import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
+import org.json.JSONObject
 import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
-/**
- * Онлайн-перевод через настраиваемый адрес (по умолчанию публичный переводчик Google).
- * Адрес меняется в настройках приложения: если он недоступен из вашей сети, укажите свой
- * (собственный прокси или сервис с тем же форматом ответа).
- */
 class WebTranslator(
     private val settings: SettingsStore,
     private val http: OkHttpClient = defaultClient(),
@@ -24,15 +20,23 @@ class WebTranslator(
         val trimmed = text.trim()
         if (trimmed.isEmpty()) return null
         if (isMostlyChinese(trimmed)) return trimmed
-        return translate(trimmed, source = "ru", target = "zh-CN")
+
+        val primary = translateGoogle(trimmed, source = "ru", target = "zh-CN")
+        if (!primary.isNullOrBlank()) return primary
+
+        return translateMyMemory(trimmed, source = "ru", target = "zh-CN")
     }
 
-    override suspend fun toRussian(text: String): String? =
-        translate(text.trim(), source = "zh-CN", target = "ru")
+    override suspend fun toRussian(text: String): String? {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return null
+        val primary = translateGoogle(trimmed, source = "zh-CN", target = "ru")
+        if (!primary.isNullOrBlank()) return primary
+        return translateMyMemory(trimmed, source = "zh-CN", target = "ru")
+    }
 
-    private suspend fun translate(text: String, source: String, target: String): String? =
+    private suspend fun translateGoogle(text: String, source: String, target: String): String? =
         withContext(Dispatchers.IO) {
-            if (text.isEmpty()) return@withContext null
             val endpoint = settings.translatorEndpoint.ifBlank { SettingsStore.DEFAULT_TRANSLATOR }
             val separator = if (endpoint.contains('?')) '&' else '?'
             val url = endpoint.trimEnd('/') + separator +
@@ -48,13 +52,32 @@ class WebTranslator(
                 http.newCall(request).execute().use { response ->
                     if (!response.isSuccessful) return@withContext null
                     val body = response.body?.string().orEmpty()
-                    parse(body)
+                    parseGoogle(body)
                 }
             }.getOrNull()
         }
 
-    /** Формат ответа: [[["перевод","оригинал",...], ...], ...] */
-    private fun parse(body: String): String? {
+    private suspend fun translateMyMemory(text: String, source: String, target: String): String? =
+        withContext(Dispatchers.IO) {
+            val encoded = URLEncoder.encode(text, "UTF-8")
+            val url = "https://translated.net|$target"
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", MtopClient.MOBILE_UA)
+                .build()
+
+            runCatching {
+                http.newCall(request).execute().use { response ->
+                    if (!response.isSuccessful) return@withContext null
+                    val body = response.body?.string().orEmpty()
+                    val json = JSONObject(body)
+                    val translated = json.optJSONObject("responseData")?.optString("translatedText").orEmpty().trim()
+                    if (translated.isBlank() || translated.contains("MYMEMORY WARNING", ignoreCase = true)) null else translated
+                }
+            }.getOrNull()
+        }
+
+    private fun parseGoogle(body: String): String? {
         val root = runCatching { JSONArray(body) }.getOrNull() ?: return null
         val segments = root.optJSONArray(0) ?: return null
         val builder = StringBuilder()
@@ -66,7 +89,6 @@ class WebTranslator(
         return builder.toString().trim().ifBlank { null }
     }
 
-    /** Доля китайских иероглифов: если запрос уже на китайском, переводить не нужно. */
     fun isMostlyChinese(text: String): Boolean {
         val han = text.count { it.code in 0x4E00..0x9FFF }
         return han > 0 && han >= text.count { !it.isWhitespace() } / 2
@@ -74,9 +96,9 @@ class WebTranslator(
 
     companion object {
         fun defaultClient(): OkHttpClient = OkHttpClient.Builder()
-            .connectTimeout(10, TimeUnit.SECONDS)
-            .readTimeout(15, TimeUnit.SECONDS)
-            .callTimeout(20, TimeUnit.SECONDS)
+            .connectTimeout(8, TimeUnit.SECONDS)
+            .readTimeout(12, TimeUnit.SECONDS)
+            .callTimeout(15, TimeUnit.SECONDS)
             .build()
     }
 }

@@ -53,56 +53,16 @@ fun WebLoginScreen(
                     fontWeight = FontWeight.Bold,
                 )
                 Text(
-                    text = "Сначала поставьте галочку согласия внизу страницы, затем нажмите Alipay.",
+                    text = "Поставьте галочку согласия внизу страницы и нажмите Alipay.",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             TextButton(onClick = {
-                webViewState.value?.evaluateJavascript(
-                    """
-                    (function() {
-                        var checkboxes = document.querySelectorAll('input[type="checkbox"]');
-                        for (var i = 0; i < checkboxes.length; i++) {
-                            if (!checkboxes[i].checked) {
-                                checkboxes[i].click();
-                            }
-                        }
-
-                        var candidates = document.querySelectorAll('a, button, div, span');
-                        for (var j = 0; j < candidates.length; j++) {
-                            var el = candidates[j];
-                            var href = (el.getAttribute('href') || '').toLowerCase();
-                            var cls = (el.className || '').toString().toLowerCase();
-                            var text = (el.innerText || '').trim();
-
-                            if (href.indexOf('privacy') !== -1 || href.indexOf('agreement') !== -1 || href.indexOf('protocol') !== -1) {
-                                continue;
-                            }
-
-                            var isAlipayBtn =
-                                cls.indexOf('alipay-login') !== -1 ||
-                                cls.indexOf('login-alipay') !== -1 ||
-                                href.indexOf('://alipay.com') !== -1 ||
-                                href.indexOf('://alipay.com') !== -1 ||
-                                text === '支付宝登录' ||
-                                text === '支付宝快捷登录';
-
-                            if (isAlipayBtn) {
-                                el.click();
-                                return 'CLICKED';
-                            }
-                        }
-                        return 'NOT_FOUND';
-                    })();
-                    """.trimIndent()
-                ) { result ->
-                    if (result != null && result.contains("NOT_FOUND")) {
-                        Toast.makeText(
-                            context,
-                            "Нажмите на иконку Alipay прямо на странице ниже",
-                            Toast.LENGTH_SHORT
-                        ).show()
+                val jsClickAlipay = "(function(){var cb=document.querySelectorAll('input[type=\"checkbox\"]');for(var i=0;i<cb.length;i++){if(!cb[i].checked)cb[i].click();}var els=document.querySelectorAll('a,button,div,span');for(var j=0;j<els.length;j++){var el=els[j];var h=(el.getAttribute('href')||'').toLowerCase();var c=(el.className||'').toString().toLowerCase();var t=(el.innerText||'').trim();if(h.indexOf('privacy')!==-1||h.indexOf('agreement')!==-1)continue;if(c.indexOf('alipay-login')!==-1||c.indexOf('login-alipay')!==-1||h.indexOf('://alipay.com')!==-1||h.indexOf('://alipay.com')!==-1||t==='支付宝登录'||t==='支付宝快捷登录'){el.click();return 'OK';}}return 'NONE';})();"
+                webViewState.value?.evaluateJavascript(jsClickAlipay) { res ->
+                    if (res != null && res.contains("NONE")) {
+                        Toast.makeText(context, "Нажмите на иконку Alipay на странице ниже", Toast.LENGTH_SHORT).show()
                     }
                 }
             }) { Text("Alipay") }
@@ -158,11 +118,7 @@ fun WebLoginScreen(
                                     ctx.startActivity(intent)
                                     true
                                 } catch (e: Exception) {
-                                    Toast.makeText(
-                                        ctx,
-                                        "Приложение Alipay не найдено, продолжаем в браузере",
-                                        Toast.LENGTH_SHORT
-                                    ).show()
+                                    Toast.makeText(ctx, "Приложение Alipay не найдено", Toast.LENGTH_SHORT).show()
                                     false
                                 }
                             }
@@ -174,31 +130,18 @@ fun WebLoginScreen(
 
                             val savedLogin = ServiceLocator.settings.savedLogin.replace("'", "\\'")
                             val savedPass = ServiceLocator.settings.savedPassword.replace("'", "\\'")
+                            val jsAutoFill = "(function(){var l=document.querySelector('input[name=\"fm-login-id\"],input[type=\"text\"],input[type=\"tel\"]');var p=document.querySelector('input[name=\"fm-login-password\"],input[type=\"password\"]');if(l&&'$savedLogin'!==''&&!l.value){l.value='$savedLogin';l.dispatchEvent(new Event('input',{bubbles:true}));}if(p&&'$savedPass'!==''&&!p.value){p.value='$savedPass';p.dispatchEvent(new Event('input',{bubbles:true}));}function sv(){var lv=l?l.value:'';var pv=p?p.value:'';if(lv||pv)AndroidCredsBridge.onCredentialsEntered(lv,pv);}if(l)l.addEventListener('change',sv);if(p)p.addEventListener('change',sv);document.addEventListener('submit',sv,true);})();"
+                            view?.evaluateJavascript(jsAutoFill, null)
 
-                            val script = """
-                                (function() {
-                                    var loginInput = document.querySelector('input[name="fm-login-id"], input[id*="login-id"], input[type="text"], input[type="tel"]');
-                                    var passInput = document.querySelector('input[name="fm-login-password"], input[id*="login-password"], input[type="password"]');
-                                    
-                                    if (loginInput && '$savedLogin' !== '' && !loginInput.value) {
-                                        loginInput.value = '$savedLogin';
-                                        loginInput.dispatchEvent(new Event('input', { bubbles: true }));
-                                    }
-                                    if (passInput && '$savedPass' !== '' && !passInput.value) {
-                                        passInput.value = '$savedPass';
-                                        passInput.dispatchEvent(new Event('input', { bubbles: true }));
-                                    }
-
-                                    function saveValues() {
-                                        var l = loginInput ? loginInput.value : '';
-                                        var p = passInput ? passInput.value : '';
-                                        if (l || p) {
-                                            AndroidCredsBridge.onCredentialsEntered(l, p);
-                                        }
-                                    }
-
-                                    if (loginInput) loginInput.addEventListener('change', saveValues);
-                                    if (passInput) passInput.addEventListener('change', saveValues);
-                                    document.addEventListener('submit', saveValues, true);
-                                })();
-                            """.trimIndent()
+                            if (ServiceLocator.login.isLoggedIn(marketplace)) {
+                                ServiceLocator.cookies.backupKnownDomains()
+                                onLoggedIn()
+                            }
+                        }
+                    }
+                    loadUrl(marketplace.loginUrl)
+                }
+            }
+        )
+    }
+}

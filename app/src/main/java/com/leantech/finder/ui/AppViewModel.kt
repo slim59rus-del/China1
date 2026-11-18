@@ -20,6 +20,8 @@ import kotlinx.coroutines.launch
 
 data class UiState(
     val query: String = "",
+    val queryHistory: List<String> = emptyList(),
+    val cnyRate: Float = 13.5f,
     val selectedSources: Set<Marketplace> = setOf(Marketplace.ALIBABA_1688),
     val factoryOnly: Boolean = false,
     val sort: SortOption = SortOption.SALES_DESC,
@@ -48,6 +50,8 @@ class AppViewModel(
     private val _state = MutableStateFlow(
         UiState(
             query = settings.lastQuery,
+            queryHistory = settings.queryHistory,
+            cnyRate = settings.cnyRate,
             selectedSources = settings.selectedSources,
             factoryOnly = settings.factoryOnly,
             sort = settings.sort,
@@ -62,10 +66,20 @@ class AppViewModel(
 
     fun onQueryChange(value: String) = _state.update { it.copy(query = value) }
 
+    fun selectHistoryQuery(value: String) {
+        _state.update { it.copy(query = value) }
+        search()
+    }
+
+    fun setCnyRate(rate: Float) {
+        settings.cnyRate = rate
+        _state.update { it.copy(cnyRate = settings.cnyRate) }
+    }
+
     fun toggleSource(marketplace: Marketplace) = _state.update { current ->
         val next = current.selectedSources.toMutableSet()
         if (!next.add(marketplace)) next.remove(marketplace)
-        if (next.isEmpty()) next.add(marketplace) // хотя бы одна площадка всегда выбрана
+        if (next.isEmpty()) next.add(marketplace)
         settings.selectedSources = next
         current.copy(selectedSources = next)
     }
@@ -99,7 +113,6 @@ class AppViewModel(
         settings.proxyBaseUrl = value
         _state.update { it.copy(proxyBaseUrl = value) }
     }
-
     fun openSettings() = _state.update { it.copy(screen = Screen.Settings) }
 
     fun openSearch() = _state.update { it.copy(screen = Screen.Search) }
@@ -112,12 +125,32 @@ class AppViewModel(
 
     fun refreshLoginStatus() = _state.update { it.copy(loginStatus = login.refresh()) }
 
+    fun logoutMarketplace(marketplace: Marketplace) {
+        login.logout(marketplace)
+        _state.update {
+            it.copy(
+                loginStatus = login.refresh(),
+                message = "Выполнен выход из ${marketplace.title}",
+            )
+        }
+    }
+
+    fun reloginMarketplace(marketplace: Marketplace) {
+        login.logout(marketplace)
+        _state.update {
+            it.copy(
+                loginStatus = login.refresh(),
+                screen = Screen.Login(marketplace),
+            )
+        }
+    }
+
     fun logout() {
         login.logout()
         _state.update {
             it.copy(
                 loginStatus = login.refresh(),
-                message = "Сессии аккаунтов удалены",
+                message = "Сессии всех аккаунтов удалены",
             )
         }
     }
@@ -133,6 +166,7 @@ class AppViewModel(
         if (current.loading) return
 
         settings.lastQuery = current.query
+        settings.addQueryToHistory(current.query)
         val request = SearchRequest(
             query = current.query.trim(),
             marketplaces = current.selectedSources,
@@ -142,7 +176,14 @@ class AppViewModel(
         )
 
         viewModelScope.launch {
-            _state.update { it.copy(loading = true, stage = "Готовлю запрос", problems = emptyList()) }
+            _state.update {
+                it.copy(
+                    loading = true,
+                    stage = "Готовлю запрос",
+                    problems = emptyList(),
+                    queryHistory = settings.queryHistory,
+                )
+            }
             val outcome = runCatching {
                 repository.search(request) { stage -> _state.update { it.copy(stage = stage) } }
             }.getOrElse { error ->

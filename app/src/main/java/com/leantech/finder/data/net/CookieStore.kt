@@ -8,6 +8,16 @@ class CookieStore(
     private val cookieManager: CookieManager = CookieManager.getInstance(),
 ) {
 
+    private val knownDomains = listOf(
+        "https://taobao.com",
+        "https://taobao.com",
+        "https://1688.com",
+        "https://1688.com",
+        "https://goofish.com",
+        "https://goofish.com",
+        "https://alipay.com",
+    )
+
     init {
         cookieManager.setAcceptCookie(true)
         restoreAllFromBackup()
@@ -17,7 +27,6 @@ class CookieStore(
         val current = cookieManager.getCookie(url)
         if (!current.isNullOrBlank()) return current
 
-        // Если системный менеджер пуст после перезапуска, пробуем восстановить из резервной копии
         restoreAllFromBackup()
         return cookieManager.getCookie(url).orEmpty()
     }
@@ -41,7 +50,7 @@ class CookieStore(
 
     fun backupKnownDomains() {
         cookieManager.flush()
-        KNOWN\_DOMAINS.forEach { domain ->
+        for (domain in knownDomains) {
             val raw = cookieManager.getCookie(domain)
             if (!raw.isNullOrBlank()) {
                 settings.saveCookiesBackup(domain, raw)
@@ -54,8 +63,10 @@ class CookieStore(
         if (backups.isEmpty()) return
 
         cookieManager.setAcceptCookie(true)
-        backups.forEach { (domain, cookieString) ->
-            cookieString.split(';').forEach { part ->
+        for (entry in backups) {
+            val domain = entry.key
+            val cookieString = entry.value
+            for (part in cookieString.split(';')) {
                 val trimmed = part.trim()
                 if (trimmed.isNotEmpty()) {
                     cookieManager.setCookie(domain, trimmed)
@@ -73,17 +84,5 @@ class CookieStore(
     fun flush() {
         cookieManager.flush()
         backupKnownDomains()
-    }
-
-    companion object {
-        private val KNOWN\_DOMAINS = listOf(
-            "https://taobao.com",
-            "https://taobao.com",
-            "https://1688.com",
-            "https://1688.com",
-            "https://goofish.com",
-            "https://goofish.com",
-            "https://alipay.com",
-        )
     }
 }

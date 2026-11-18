@@ -1,6 +1,9 @@
 package com.leantech.finder.ui.components
 
+import android.content.Context
+import android.content.Intent
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.util.LruCache
 import android.widget.Toast
 import androidx.compose.foundation.Image
@@ -50,11 +53,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.leantech.finder.data.net.MtopClient
+import com.leantech.finder.domain.model.Marketplace
 import com.leantech.finder.domain.model.Product
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.net.URLEncoder
 import java.util.concurrent.TimeUnit
 
 private object ImageMemoryCache {
@@ -63,6 +68,47 @@ private object ImageMemoryCache {
         .connectTimeout(8, TimeUnit.SECONDS)
         .readTimeout(10, TimeUnit.SECONDS)
         .build()
+}
+
+private fun openInNativeAppOrBrowser(
+    context: Context,
+    marketplace: Marketplace,
+    webUrl: String,
+    itemId: String? = null,
+) {
+    val numericId = itemId?.filter { it.isDigit() }.orEmpty()
+    val deepLink = when {
+        numericId.isNotEmpty() -> when (marketplace) {
+            Marketplace.TAOBAO -> "taobao://://taobao.com"
+            Marketplace.ALIBABA_1688 -> {
+                val target = URLEncoder.encode("https://1688.com", "UTF-8")
+                "wireless1688://://1688.com"
+            }
+            Marketplace.XIANYU -> "fleamarket://item?id=$numericId"
+        }
+        webUrl.startsWith("https://") -> when (marketplace) {
+            Marketplace.TAOBAO -> webUrl.replaceFirst("https://", "taobao://")
+            Marketplace.ALIBABA_1688 -> {
+                val target = URLEncoder.encode(webUrl, "UTF-8")
+                "wireless1688://://1688.com"
+            }
+            Marketplace.XIANYU -> webUrl.replaceFirst("https://", "fleamarket://")
+        }
+        else -> null
+    }
+
+    if (deepLink != null) {
+        val launched = runCatching {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(deepLink)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+            true
+        }.getOrDefault(false)
+        if (launched) return
+    }
+
+    openLink(context, webUrl)
 }
 
 @Composable
@@ -210,7 +256,14 @@ fun ProductCard(
             Spacer(Modifier.height(10.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 OutlinedButton(
-                    onClick = { openLink(context, product.itemUrl) },
+                    onClick = {
+                        openInNativeAppOrBrowser(
+                            context = context,
+                            marketplace = product.marketplace,
+                            webUrl = product.itemUrl,
+                            itemId = product.id,
+                        )
+                    },
                     modifier = Modifier.weight(1f),
                 ) {
                     Icon(Icons.Filled.OpenInNew, contentDescription = null, modifier = Modifier.height(18.dp))
@@ -219,7 +272,13 @@ fun ProductCard(
                 }
                 product.seller.shopUrl?.let { shopUrl ->
                     OutlinedButton(
-                        onClick = { openLink(context, shopUrl) },
+                        onClick = {
+                            openInNativeAppOrBrowser(
+                                context = context,
+                                marketplace = product.marketplace,
+                                webUrl = shopUrl,
+                            )
+                        },
                         modifier = Modifier.weight(1f),
                     ) {
                         Icon(Icons.Filled.Storefront, contentDescription = null, modifier = Modifier.height(18.dp))

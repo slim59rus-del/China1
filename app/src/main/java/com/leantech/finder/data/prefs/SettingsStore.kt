@@ -9,71 +9,75 @@ import com.leantech.finder.domain.model.SortOption
 
 class SettingsStore(context: Context) {
 
+    private val masterKey = MasterKey.Builder(context)
+        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+        .build()
+
     private val prefs: SharedPreferences = EncryptedSharedPreferences.create(
         context,
-        "china\_sourcing\_prefs",
-        MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256\_GCM).build(),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256\_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256\_GCM,
+        "china_sourcing_prefs",
+        masterKey,
+        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
     )
 
     var resultLimit: Int
-        get() = prefs.getInt(KEY\_LIMIT, 30)
-        set(value) = prefs.edit().putInt(KEY\_LIMIT, value.coerceIn(10, 100)).apply()
+        get() = prefs.getInt("result_limit", 30)
+        set(value) = prefs.edit().putInt("result_limit", value.coerceIn(10, 100)).apply()
 
     var sort: SortOption
-        get() = SortOption.entries.firstOrNull { it.name == prefs.getString(KEY\_SORT, null) }
-            ?: SortOption.SALES\_DESC
-        set(value) = prefs.edit().putString(KEY\_SORT, value.name).apply()
+        get() = SortOption.entries.firstOrNull { it.name == prefs.getString("sort", null) }
+            ?: SortOption.SALES_DESC
+        set(value) = prefs.edit().putString("sort", value.name).apply()
 
     var factoryOnly: Boolean
-        get() = prefs.getBoolean(KEY\_FACTORY, false)
-        set(value) = prefs.edit().putBoolean(KEY\_FACTORY, value).apply()
+        get() = prefs.getBoolean("factory_only", false)
+        set(value) = prefs.edit().putBoolean("factory_only", value).apply()
 
     var selectedSources: Set<Marketplace>
-        get() = prefs.getStringSet(KEY\_SOURCES, null)
+        get() = prefs.getStringSet("sources", null)
             ?.mapNotNull { key -> Marketplace.entries.firstOrNull { it.key == key } }
             ?.toSet()
             ?.takeIf { it.isNotEmpty() }
-            ?: setOf(Marketplace.ALIBABA\_1688)
-        set(value) = prefs.edit().putStringSet(KEY\_SOURCES, value.map { it.key }.toSet()).apply()
+            ?: setOf(Marketplace.ALIBABA_1688)
+        set(value) = prefs.edit().putStringSet("sources", value.map { it.key }.toSet()).apply()
 
     var lastQuery: String
-        get() = prefs.getString(KEY\_LAST\_QUERY, "").orEmpty()
-        set(value) = prefs.edit().putString(KEY\_LAST\_QUERY, value).apply()
+        get() = prefs.getString("last_query", "").orEmpty()
+        set(value) = prefs.edit().putString("last_query", value).apply()
 
     var translatorEndpoint: String
-        get() = prefs.getString(KEY\_TRANSLATOR, DEFAULT\_TRANSLATOR).orEmpty()
-        set(value) = prefs.edit().putString(KEY\_TRANSLATOR, value.trim()).apply()
+        get() = prefs.getString("translator_endpoint", DEFAULT_TRANSLATOR).orEmpty()
+        set(value) = prefs.edit().putString("translator_endpoint", value.trim()).apply()
 
     var proxyBaseUrl: String
-        get() = prefs.getString(KEY\_PROXY, "").orEmpty()
-        set(value) = prefs.edit().putString(KEY\_PROXY, value.trim()).apply()
+        get() = prefs.getString("proxy_base_url", "").orEmpty()
+        set(value) = prefs.edit().putString("proxy_base_url", value.trim()).apply()
 
     var translateTitles: Boolean
-        get() = prefs.getBoolean(KEY\_TRANSLATE\_TITLES, true)
-        set(value) = prefs.edit().putBoolean(KEY\_TRANSLATE\_TITLES, value).apply()
+        get() = prefs.getBoolean("translate_titles", true)
+        set(value) = prefs.edit().putBoolean("translate_titles", value).apply()
 
     var savedLogin: String
-        get() = prefs.getString(KEY\_SAVED\_LOGIN, "").orEmpty()
-        set(value) = prefs.edit().putString(KEY\_SAVED\_LOGIN, value).apply()
+        get() = prefs.getString("saved_account_login", "").orEmpty()
+        set(value) = prefs.edit().putString("saved_account_login", value).apply()
 
     var savedPassword: String
-        get() = prefs.getString(KEY\_SAVED\_PASSWORD, "").orEmpty()
-        set(value) = prefs.edit().putString(KEY\_SAVED\_PASSWORD, value).apply()
+        get() = prefs.getString("saved_account_password", "").orEmpty()
+        set(value) = prefs.edit().putString("saved_account_password", value).apply()
 
     fun saveCookiesBackup(domain: String, cookieString: String) {
         if (cookieString.isNotBlank()) {
-            prefs.edit().putString("$KEY\_COOKIES\_PREFIX$domain", cookieString).apply()
+            prefs.edit().putString("cookies_backup_$domain", cookieString).apply()
         }
     }
 
     fun getCookiesBackup(domain: String): String? =
-        prefs.getString("$KEY\_COOKIES\_PREFIX$domain", null)
+        prefs.getString("cookies_backup_$domain", null)
 
     fun getAllCookieBackups(): Map<String, String> =
-        prefs.all.filterKeys { it.startsWith(KEY\_COOKIES\_PREFIX) }
-            .mapKeys { it.key.removePrefix(KEY\_COOKIES\_PREFIX) }
+        prefs.all.filterKeys { it.startsWith("cookies_backup_") }
+            .mapKeys { it.key.removePrefix("cookies_backup_") }
             .mapValues { it.value.toString() }
 
     fun markLoggedIn(marketplace: Marketplace, value: Boolean) =
@@ -84,35 +88,20 @@ class SettingsStore(context: Context) {
 
     fun clearSession() {
         val editor = prefs.edit()
-            .remove(KEY\_LOGIN\_TAOBAO)
-            .remove(KEY\_LOGIN\_1688)
-            .remove(KEY\_LOGIN\_XIANYU)
-        prefs.all.keys.filter { it.startsWith(KEY\_COOKIES\_PREFIX) }.forEach { editor.remove(it) }
+            .remove("login_taobao")
+            .remove("login_1688")
+            .remove("login_xianyu")
+        prefs.all.keys.filter { it.startsWith("cookies_backup_") }.forEach { editor.remove(it) }
         editor.apply()
     }
 
     private fun loginKey(marketplace: Marketplace) = when (marketplace) {
-        Marketplace.TAOBAO -> KEY\_LOGIN\_TAOBAO
-        Marketplace.ALIBABA\_1688 -> KEY\_LOGIN\_1688
-        Marketplace.XIANYU -> KEY\_LOGIN\_XIANYU
+        Marketplace.TAOBAO -> "login_taobao"
+        Marketplace.ALIBABA_1688 -> "login_1688"
+        Marketplace.XIANYU -> "login_xianyu"
     }
 
     companion object {
-        const val DEFAULT\_TRANSLATOR = "https://googleapis.com"
-
-        private const val KEY\_LIMIT = "result\_limit"
-        private const val KEY\_SORT = "sort"
-        private const val KEY\_FACTORY = "factory\_only"
-        private const val KEY\_SOURCES = "sources"
-        private const val KEY\_LAST\_QUERY = "last\_query"
-        private const val KEY\_TRANSLATOR = "translator\_endpoint"
-        private const val KEY\_PROXY = "proxy\_base\_url"
-        private const val KEY\_TRANSLATE\_TITLES = "translate\_titles"
-        private const val KEY\_LOGIN\_TAOBAO = "login\_taobao"
-        private const val KEY\_LOGIN\_1688 = "login\_1688"
-        private const val KEY\_LOGIN\_XIANYU = "login\_xianyu"
-        private const val KEY\_SAVED\_LOGIN = "saved\_account\_login"
-        private const val KEY\_SAVED\_PASSWORD = "saved\_account\_password"
-        private const val KEY\_COOKIES\_PREFIX = "cookies\_backup\_"
+        const val DEFAULT_TRANSLATOR = "https://googleapis.com"
     }
 }

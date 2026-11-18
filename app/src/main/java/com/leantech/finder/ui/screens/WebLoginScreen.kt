@@ -110,14 +110,14 @@ fun WebLoginScreen(
                             if (url.startsWith("alipays://") || url.startsWith("alipay://") || url.startsWith("intent://")) {
                                 return try {
                                     val intent = if (url.startsWith("intent://")) {
-                                        Intent.parseUri(url, Intent.URI\_INTENT\_SCHEME)
+                                        Intent.parseUri(url, 1)
                                     } else {
-                                        Intent(Intent.ACTION\_VIEW, Uri.parse(url))
+                                        Intent("android.intent.action.VIEW", Uri.parse(url))
                                     }
-                                    intent.addFlags(Intent.FLAG\_ACTIVITY\_NEW\_TASK)
+                                    intent.addFlags(268435456)
                                     context.startActivity(intent)
                                     true
-                                } catch (\_: Exception) {
+                                } catch (e: Exception) {
                                     false
                                 }
                             }

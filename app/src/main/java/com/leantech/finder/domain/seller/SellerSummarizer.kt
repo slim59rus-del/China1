@@ -5,11 +5,6 @@ import com.leantech.finder.domain.model.Marketplace
 import com.leantech.finder.domain.model.Product
 import com.leantech.finder.domain.model.Seller
 
-/**
- * Короткое описание продавца по-русски: название магазина, регион, срок работы, рейтинг, метки
- * площадки и вывод о том, фабрика это или перекупщик. Только факты из карточки — если данных нет,
- * так и написано.
- */
 class SellerSummarizer(
     private val translator: Translator,
     private val translateFields: Boolean = true,
@@ -19,9 +14,16 @@ class SellerSummarizer(
         val seller = product.seller
         val lines = mutableListOf<String>()
 
-        lines += seller.name.takeIf { it.isNotBlank() }
-            ?.let { "Продавец: $it" }
-            ?: "Продавец: имя в карточке не указано"
+        if (seller.name.isNotBlank()) {
+            val translatedName = if (translateFields) runCatching { translator.toRussian(seller.name) }.getOrNull() else null
+            lines += if (!translatedName.isNullOrBlank() && translatedName != seller.name) {
+                "Продавец: $translatedName (${seller.name})"
+            } else {
+                "Продавец: ${seller.name}"
+            }
+        } else {
+            lines += "Продавец: имя в карточке не указано"
+        }
 
         seller.location?.takeIf { it.isNotBlank() }?.let { raw ->
             val translated = if (translateFields) runCatching { translator.toRussian(raw) }.getOrNull() else null
@@ -29,22 +31,28 @@ class SellerSummarizer(
         }
 
         seller.yearsOnPlatform?.let { years ->
-            if (years in 1..60) lines += "Работает на площадке: около $years г."
+            if (years in 1..60) lines += "Стаж на площадке: $years г."
         }
-        seller.rating?.takeIf { it.isNotBlank() }?.let { lines += "Рейтинг площадки: $it" }
+        seller.rating?.takeIf { it.isNotBlank() }?.let { lines += "Рейтинг: $it" }
 
         product.salesText?.takeIf { it.isNotBlank() }?.let { sales ->
+            val ruSales = if (translateFields) runCatching { translator.toRussian(sales) }.getOrNull() else null
+            val formatted = if (!ruSales.isNullOrBlank() && ruSales != sales) "$ruSales ($sales)" else sales
             lines += if (product.marketplace == Marketplace.XIANYU) {
-                "Спрос: $sales (в 闲鱼 это счётчик «хотят купить», продаж у объявления нет)"
+                "Спрос: $formatted (хотят купить)"
             } else {
-                "Продажи: $sales"
+                "Продажи: $formatted"
             }
         }
 
-        lines += when {
-            seller.isFactory -> "Тип: фабрика/производитель. Признаки: " +
-                seller.factorySignals.joinToString(", ")
-            else -> "Тип: прямых признаков фабрики в карточке нет — похоже на магазин или посредника"
+        if (seller.isFactory) {
+            val translatedSignals = seller.factorySignals.map { sig ->
+                val ru = if (translateFields) runCatching { translator.toRussian(sig) }.getOrNull() else null
+                if (!ru.isNullOrBlank() && ru != sig) "$ru ($sig)" else sig
+            }
+            lines += "Тип: фабрика / производитель (${translatedSignals.joinToString(", ")})"
+        } else {
+            lines += "Тип: магазин или посредник (прямых меток фабрики нет)"
         }
 
         if (seller.tags.isNotEmpty()) {
@@ -52,16 +60,12 @@ class SellerSummarizer(
                 val ru = if (translateFields) runCatching { translator.toRussian(tag) }.getOrNull() else null
                 if (ru.isNullOrBlank()) tag else ru
             }
-            lines += "Метки площадки: " + tags.joinToString(", ")
+            lines += "Метки: " + tags.joinToString(", ")
         }
-
-        seller.shopUrl?.let { lines += "Страница продавца: $it" }
-        product.priceCny?.let { price -> lines += "Цена: $price ¥" }
 
         return lines.joinToString("\n")
     }
 
-    /** Описание по продавцу, когда карточки товара под рукой нет. */
     suspend fun describeSeller(seller: Seller, marketplace: Marketplace = Marketplace.ALIBABA_1688): String =
         describe(
             Product(

@@ -11,8 +11,6 @@ import org.json.JSONObject
 
 /**
  * 闲鱼 (Idle Fish / Goofish) — площадка частных объявлений и заводских излишков.
- * Признак «фабрика» здесь слабый: фильтр работает по словам в объявлении и профиле продавца,
- * а результаты с признаками перекупщика помечаются в описании продавца.
  */
 class XianyuSource(
     private val mtop: MtopClient,
@@ -23,12 +21,19 @@ class XianyuSource(
 
     override suspend fun search(query: String, request: SearchRequest): SourceResult {
         val data = JSONObject().apply {
-            put("keyword", query)
             put("pageNumber", 1)
+            put("keyword", query)
+            put("fromFilter", false)
             put("rowsPerPage", request.limitPerMarketplace)
-            put("sortField", sortField(request))
             put("sortValue", sortValue(request))
-            put("searchReqFromPage", "xySearch")
+            put("sortField", sortField(request))
+            put("customDistance", "")
+            put("gps", "")
+            put("propValueStr", "{}")
+            put("customGps", "")
+            put("searchReqFromPage", "pcSearch")
+            put("extraFilterValue", "{}")
+            put("userPositionJson", "{}")
         }
 
         return try {
@@ -38,12 +43,14 @@ class XianyuSource(
                 version = "1.0",
                 data = data,
                 proxyBaseUrl = settings.proxyBaseUrl,
+                extraQuery = mapOf("appKey" to XIANYU_APP_KEY),
             )
             val products = JsonCards.extract(response, marketplace, query)
             if (products.isEmpty()) {
-                SourceResult(problem = emptyProblem(query))
+                val retCode = extractRetCode(response)
+                SourceResult(problem = emptyProblem(query, retCode))
             } else {
-                SourceResult(products)
+                SourceResult(products.take(request.limitPerMarketplace))
             }
         } catch (error: MtopException) {
             SourceResult(
@@ -56,23 +63,46 @@ class XianyuSource(
             )
         }
     }
-
-    private fun sortField(request: SearchRequest): String =
-        if (request.sort == SortOption.RELEVANCE) "default" else "price"
+    private fun sortField(request: SearchRequest): String = when (request.sort) {
+        SortOption.PRICE_ASC, SortOption.PRICE_DESC -> "price"
+        else -> ""
+    }
 
     private fun sortValue(request: SearchRequest): String = when (request.sort) {
         SortOption.PRICE_ASC -> "asc"
-        else -> "desc"
+        SortOption.PRICE_DESC -> "desc"
+        else -> ""
     }
 
-    private fun emptyProblem(query: String) = SourceProblem(
-        marketplace = marketplace,
-        message = "闲鱼 вернул пустой список: обычно нужен вход в аккаунт.",
-        needsLogin = true,
-        webFallbackUrl = webSearchUrl(query),
-    )
+    private fun extractRetCode(response: JSONObject): String? {
+        val retArray = response.optJSONArray("ret") ?: return null
+        val messages = buildList {
+            for (i in 0 until retArray.length()) {
+                val item = retArray.optString(i)
+                if (item.isNotBlank() && !item.startsWith("SUCCESS")) {
+                    add(item)
+                }
+            }
+        }
+        return messages.takeIf { it.isNotEmpty() }?.joinToString("; ")
+    }
+
+    private fun emptyProblem(query: String, retCode: String? = null): SourceProblem {
+        val msg = if (!retCode.isNullOrBlank()) {
+            "闲鱼 вернул пустой список (" + retCode + ")"
+        } else {
+            "闲鱼 вернул пустой список: обычно нужен вход в аккаунт."
+        }
+        return SourceProblem(
+            marketplace = marketplace,
+            message = msg,
+            needsLogin = true,
+            webFallbackUrl = webSearchUrl(query),
+        )
+    }
 
     companion object {
         const val SEARCH_API = "mtop.taobao.idlemtopsearch.search"
+        const val XIANYU_APP_KEY = "34839810"
     }
 }

@@ -1,14 +1,26 @@
 package com.leantech.finder.data.net
 
 import android.webkit.CookieManager
+import com.leantech.finder.data.prefs.SettingsStore
 
-/**
- * Единое хранилище cookie: то же системное хранилище, куда пишет встроенный браузер приложения.
- * Поэтому после ручного входа в аккаунт запросы уходят уже авторизованными.
- */
-class CookieStore(private val cookieManager: CookieManager = CookieManager.getInstance()) {
+class CookieStore(
+    private val settings: SettingsStore,
+    private val cookieManager: CookieManager = CookieManager.getInstance(),
+) {
 
-    fun cookieHeader(url: String): String = cookieManager.getCookie(url).orEmpty()
+    init {
+        cookieManager.setAcceptCookie(true)
+        restoreAllFromBackup()
+    }
+
+    fun cookieHeader(url: String): String {
+        val current = cookieManager.getCookie(url)
+        if (!current.isNullOrBlank()) return current
+
+        // Если системный менеджер пуст после перезапуска, пробуем восстановить из резервной копии
+        restoreAllFromBackup()
+        return cookieManager.getCookie(url).orEmpty()
+    }
 
     fun read(url: String, name: String): String? = cookieHeader(url)
         .split(';')
@@ -19,10 +31,59 @@ class CookieStore(private val cookieManager: CookieManager = CookieManager.getIn
 
     fun has(url: String, name: String): Boolean = read(url, name) != null
 
+    fun backupDomain(url: String) {
+        cookieManager.flush()
+        val raw = cookieManager.getCookie(url)
+        if (!raw.isNullOrBlank()) {
+            settings.saveCookiesBackup(url, raw)
+        }
+    }
+
+    fun backupKnownDomains() {
+        cookieManager.flush()
+        KNOWN\_DOMAINS.forEach { domain ->
+            val raw = cookieManager.getCookie(domain)
+            if (!raw.isNullOrBlank()) {
+                settings.saveCookiesBackup(domain, raw)
+            }
+        }
+    }
+
+    fun restoreAllFromBackup() {
+        val backups = settings.getAllCookieBackups()
+        if (backups.isEmpty()) return
+
+        cookieManager.setAcceptCookie(true)
+        backups.forEach { (domain, cookieString) ->
+            cookieString.split(';').forEach { part ->
+                val trimmed = part.trim()
+                if (trimmed.isNotEmpty()) {
+                    cookieManager.setCookie(domain, trimmed)
+                }
+            }
+        }
+        cookieManager.flush()
+    }
+
     fun clear() {
         cookieManager.removeAllCookies(null)
         cookieManager.flush()
     }
 
-    fun flush() = cookieManager.flush()
+    fun flush() {
+        cookieManager.flush()
+        backupKnownDomains()
+    }
+
+    companion object {
+        private val KNOWN\_DOMAINS = listOf(
+            "https://taobao.com",
+            "https://taobao.com",
+            "https://1688.com",
+            "https://1688.com",
+            "https://goofish.com",
+            "https://goofish.com",
+            "https://alipay.com",
+        )
+    }
 }

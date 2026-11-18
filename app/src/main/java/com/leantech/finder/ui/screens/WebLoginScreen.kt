@@ -1,41 +1,204 @@
-package com.leantech.finder.data.session
+package com.leantech.finder.ui.screens
 
-import com.leantech.finder.data.net.CookieStore
-import com.leantech.finder.data.prefs.SettingsStore
+import android.annotation.SuppressLint
+import android.content.Intent
+import android.net.Uri
+import android.webkit.CookieManager
+import android.webkit.JavascriptInterface
+import android.webkit.WebResourceRequest
+import android.webkit.WebView
+import android.webkit.WebViewClient
+import android.widget.Toast
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.viewinterop.AndroidView
+import com.leantech.finder.di.ServiceLocator
 import com.leantech.finder.domain.model.Marketplace
 
-class LoginManager(
-    private val cookies: CookieStore,
-    private val settings: SettingsStore,
+@SuppressLint("SetJavaScriptEnabled")
+@Composable
+fun WebLoginScreen(
+    marketplace: Marketplace,
+    onClosed: () -> Unit,
+    onLoggedIn: () -> Unit = {},
 ) {
+    val context = LocalContext.current
+    val webViewState = remember { mutableStateOf<WebView?>(null) }
 
-    fun loginUrl(marketplace: Marketplace): String = marketplace.loginUrl
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 16.dp, end = 8.dp, top = 22.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text(
+                    text = "Вход: ${marketplace.title}",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Text(
+                    text = "Сначала поставьте галочку согласия внизу страницы, затем нажмите Alipay.",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            TextButton(onClick = {
+                webViewState.value?.evaluateJavascript(
+                    """
+                    (function() {
+                        var checkboxes = document.querySelectorAll('input[type="checkbox"]');
+                        for (var i = 0; i < checkboxes.length; i++) {
+                            if (!checkboxes[i].checked) {
+                                checkboxes[i].click();
+                            }
+                        }
 
-    fun isLoggedIn(marketplace: Marketplace): Boolean {
-        val host = marketplace.apiHost
-        val u = 95.toChar()
-        val mh5tk = "${u}m${u}h5${u}tk"
+                        var candidates = document.querySelectorAll('a, button, div, span');
+                        for (var j = 0; j < candidates.length; j++) {
+                            var el = candidates[j];
+                            var href = (el.getAttribute('href') || '').toLowerCase();
+                            var cls = (el.className || '').toString().toLowerCase();
+                            var text = (el.innerText || '').trim();
 
-        val alive = when (marketplace) {
-            Marketplace.TAOBAO -> cookies.has(host, "cookie2") && cookies.has(host, mh5tk)
-            Marketplace.XIANYU -> cookies.has(host, "cookie2") || cookies.has(host, "unb")
-            else -> cookies.has(host, "cookie2") || cookies.has(host, "tracknick")
+                            if (href.indexOf('privacy') !== -1 || href.indexOf('agreement') !== -1 || href.indexOf('protocol') !== -1) {
+                                continue;
+                            }
+
+                            var isAlipayBtn =
+                                cls.indexOf('alipay-login') !== -1 ||
+                                cls.indexOf('login-alipay') !== -1 ||
+                                href.indexOf('://alipay.com') !== -1 ||
+                                href.indexOf('://alipay.com') !== -1 ||
+                                text === '支付宝登录' ||
+                                text === '支付宝快捷登录';
+
+                            if (isAlipayBtn) {
+                                el.click();
+                                return 'CLICKED';
+                            }
+                        }
+                        return 'NOT_FOUND';
+                    })();
+                    """.trimIndent()
+                ) { result ->
+                    if (result != null && result.contains("NOT_FOUND")) {
+                        Toast.makeText(
+                            context,
+                            "Нажмите на иконку Alipay прямо на странице ниже",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            }) { Text("Alipay") }
+
+            TextButton(onClick = {
+                ServiceLocator.cookies.flush()
+                onClosed()
+            }) { Text("Готово") }
         }
-        if (alive) {
-            settings.markLoggedIn(marketplace, true)
-            cookies.backupDomain(host)
-            cookies.backupKnownDomains()
-        }
-        return alive
-    }
 
-    fun refresh(): Map<Marketplace, Boolean> {
-        cookies.flush()
-        return Marketplace.entries.associateWith { isLoggedIn(it) }
-    }
+        AndroidView(
+            modifier = Modifier.fillMaxSize(),
+            factory = { ctx ->
+                WebView(ctx).apply {
+                    webViewState.value = this
+                    settings.javaScriptEnabled = true
+                    settings.domStorageEnabled = true
+                    settings.databaseEnabled = true
+                    settings.loadWithOverviewMode = true
+                    settings.useWideViewPort = true
+                    settings.userAgentString =
+                        "Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36"
 
-    fun logout() {
-        cookies.clear()
-        settings.clearSession()
-    }
-}
+                    val cookieManager = CookieManager.getInstance()
+                    cookieManager.setAcceptCookie(true)
+                    cookieManager.setAcceptThirdPartyCookies(this, true)
+
+                    addJavascriptInterface(
+                        object {
+                            @JavascriptInterface
+                            fun onCredentialsEntered(login: String, password: String) {
+                                if (login.isNotBlank()) ServiceLocator.settings.savedLogin = login
+                                if (password.isNotBlank()) ServiceLocator.settings.savedPassword = password
+                            }
+                        },
+                        "AndroidCredsBridge"
+                    )
+
+                    webViewClient = object : WebViewClient() {
+                        override fun shouldOverrideUrlLoading(
+                            view: WebView?,
+                            request: WebResourceRequest?
+                        ): Boolean {
+                            val url = request?.url?.toString() ?: return false
+                            if (url.startsWith("alipays://") || url.startsWith("alipay://") || url.startsWith("intent://")) {
+                                return try {
+                                    val intent = if (url.startsWith("intent://")) {
+                                        Intent.parseUri(url, 1)
+                                    } else {
+                                        Intent("android.intent.action.VIEW", Uri.parse(url))
+                                    }
+                                    intent.addFlags(268435456)
+                                    ctx.startActivity(intent)
+                                    true
+                                } catch (e: Exception) {
+                                    Toast.makeText(
+                                        ctx,
+                                        "Приложение Alipay не найдено, продолжаем в браузере",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
+                                    false
+                                }
+                            }
+                            return false
+                        }
+
+                        override fun onPageFinished(view: WebView?, url: String?) {
+                            ServiceLocator.cookies.flush()
+
+                            val savedLogin = ServiceLocator.settings.savedLogin.replace("'", "\\'")
+                            val savedPass = ServiceLocator.settings.savedPassword.replace("'", "\\'")
+
+                            val script = """
+                                (function() {
+                                    var loginInput = document.querySelector('input[name="fm-login-id"], input[id*="login-id"], input[type="text"], input[type="tel"]');
+                                    var passInput = document.querySelector('input[name="fm-login-password"], input[id*="login-password"], input[type="password"]');
+                                    
+                                    if (loginInput && '$savedLogin' !== '' && !loginInput.value) {
+                                        loginInput.value = '$savedLogin';
+                                        loginInput.dispatchEvent(new Event('input', { bubbles: true }));
+                                    }
+                                    if (passInput && '$savedPass' !== '' && !passInput.value) {
+                                        passInput.value = '$savedPass';
+                                        passInput.dispatchEvent(new Event('input', { bubbles: true }));
+                                    }
+
+                                    function saveValues() {
+                                        var l = loginInput ? loginInput.value : '';
+                                        var p = passInput ? passInput.value : '';
+                                        if (l || p) {
+                                            AndroidCredsBridge.onCredentialsEntered(l, p);
+                                        }
+                                    }
+
+                                    if (loginInput) loginInput.addEventListener('change', saveValues);
+                                    if (passInput) passInput.addEventListener('change', saveValues);
+                                    document.addEventListener('submit', saveValues, true);
+                                })();
+                            """.trimIndent()

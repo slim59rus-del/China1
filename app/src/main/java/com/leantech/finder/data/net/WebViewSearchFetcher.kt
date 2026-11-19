@@ -19,7 +19,7 @@ import kotlin.coroutines.resume
 
 /**
  * Загружает страницу поиска в виртуальном WebView (с заданными размерами экрана для движка Chromium),
- * перехватывает XHR/fetch ответы и извлекает JSON или DOM-карточки товаров.
+ * перехватывает XHR/fetch ответы с карточками товаров и извлекает JSON или DOM-карточки.
  */
 object WebViewSearchFetcher {
 
@@ -61,14 +61,14 @@ object WebViewSearchFetcher {
                     mainHandler.post { cleanupAndResume(null) }
                 }
 
-                // Задаём виртуальные размеры экрана, иначе Chromium на EMUI/Android не рендерит DOM и зависает на about:blank
+                // Задаём виртуальные размеры экрана, иначе Chromium на EMUI/Android не рендерит DOM
                 val widthSpec = View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY)
                 val heightSpec = View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY)
                 webView.measure(widthSpec, heightSpec)
                 webView.layout(0, 0, 1080, 1920)
                 webView.onResume()
 
-                val isMobileSite = searchUrl.contains("://1688.com") || searchUrl.contains("://1688.com")
+                val isMobileSite = searchUrl.contains("//m.")
                 webView.settings.javaScriptEnabled = true
                 webView.settings.domStorageEnabled = true
                 webView.settings.databaseEnabled = true
@@ -91,22 +91,38 @@ object WebViewSearchFetcher {
                         window.__finderHooked = true;
                         window.__capturedApiJson = null;
 
+                        function looksLikeProductPayload(clean) {
+                            if (!clean || clean.length < 800 || !clean.startsWith('{')) return false;
+                            var hasId = (
+                                clean.indexOf('"offerId"') !== -1 ||
+                                clean.indexOf('"itemId"') !== -1 ||
+                                clean.indexOf('"nid"') !== -1
+                            );
+                            var hasTitle = (
+                                clean.indexOf('"simpleSubject"') !== -1 ||
+                                clean.indexOf('"subject"') !== -1 ||
+                                clean.indexOf('"title"') !== -1 ||
+                                clean.indexOf('"rawTitle"') !== -1
+                            );
+                            var hasPrice = (
+                                clean.indexOf('"price"') !== -1 ||
+                                clean.indexOf('"priceDisplay"') !== -1 ||
+                                clean.indexOf('"salePrice"') !== -1 ||
+                                clean.indexOf('"priceInfo"') !== -1
+                            );
+                            return hasId && hasTitle && hasPrice;
+                        }
+
                         function checkPayload(text) {
-                            if (!text || text.length < 300) return;
+                            if (!text || text.length < 800) return;
                             var clean = text.trim();
-                            if (clean.indexOf('(') > 0 && clean.indexOf('(') < 50 && clean.endsWith(')')) {
+                            if (clean.indexOf('(') > 0 && clean.indexOf('(') < 60 && clean.endsWith(')')) {
                                 clean = clean.substring(clean.indexOf('(') + 1, clean.length - 1);
                             }
-                            if (clean.startsWith('{') && (
-                                clean.indexOf('offerList') !== -1 ||
-                                clean.indexOf('resultList') !== -1 ||
-                                clean.indexOf('itemId') !== -1 ||
-                                clean.indexOf('offerId') !== -1 ||
-                                clean.indexOf('simpleSubject') !== -1 ||
-                                clean.indexOf('picUrl') !== -1 ||
-                                clean.indexOf('subject') !== -1
-                            )) {
-                                window.__capturedApiJson = clean;
+                            if (looksLikeProductPayload(clean)) {
+                                if (!window.__capturedApiJson || clean.length > window.__capturedApiJson.length) {
+                                    window.__capturedApiJson = clean;
+                                }
                             }
                         }
 
@@ -140,38 +156,53 @@ object WebViewSearchFetcher {
                 """.trimIndent()
                 val pollJs = """
                     (function() {
+                        var curUrl = location.href || '';
+                        var curTitle = document.title || '';
+                        var bodySnippet = (document.body && document.body.innerText)
+                            ? document.body.innerText.replace(/\s+/g, ' ').trim().slice(0, 140)
+                            : '';
+
+                        function wrapResult(obj, sourceTag) {
+                            obj.__debugUrl = curUrl;
+                            obj.__debugTitle = curTitle;
+                            obj.__debugText = '[' + sourceTag + '] ' + bodySnippet;
+                            return JSON.stringify(obj);
+                        }
+
                         try {
                             if (window.__capturedApiJson) {
-                                return window.__capturedApiJson;
+                                var parsedApi = JSON.parse(window.__capturedApiJson);
+                                if (parsedApi && typeof parsedApi === 'object') {
+                                    return wrapResult(parsedApi, 'XHR');
+                                }
                             }
                             if (window.__INIT_DATA && typeof window.__INIT_DATA === 'object') {
                                 var raw = JSON.stringify(window.__INIT_DATA);
-                                if (raw && raw.length > 500 && (
-                                    raw.indexOf('offerId') !== -1 ||
-                                    raw.indexOf('simpleSubject') !== -1 ||
-                                    raw.indexOf('subject') !== -1
-                                )) {
-                                    return raw;
+                                if (raw && raw.length > 1500 &&
+                                    (raw.indexOf('"offerId"') !== -1 || raw.indexOf('"itemId"') !== -1) &&
+                                    (raw.indexOf('"price"') !== -1 || raw.indexOf('"priceDisplay"') !== -1)) {
+                                    return wrapResult(window.__INIT_DATA, 'INIT_DATA');
                                 }
                             }
                             if (window.data && typeof window.data === 'object') {
                                 var rawData = JSON.stringify(window.data);
-                                if (rawData && rawData.length > 500 && (
-                                    rawData.indexOf('offerId') !== -1 ||
-                                    rawData.indexOf('subject') !== -1
-                                )) {
-                                    return rawData;
+                                if (rawData && rawData.length > 1500 &&
+                                    (rawData.indexOf('"offerId"') !== -1 || rawData.indexOf('"itemId"') !== -1) &&
+                                    (rawData.indexOf('"price"') !== -1 || rawData.indexOf('"priceDisplay"') !== -1)) {
+                                    return wrapResult(window.data, 'WINDOW_DATA');
                                 }
                             }
+
                             var items = [];
+                            var seen = {};
                             var anchors = document.querySelectorAll(
-                                'a[href*="offer/"], a[href*="offerId="], a[href*="://goofish.com"], a[href*="item.htm"]'
+                                'a[href*="/offer/"], a[href*="offerId="], a[href*="item?id="], a[href*="itemId="], a[href*="item.htm"]'
                             );
                             for (var i = 0; i < anchors.length; i++) {
                                 var a = anchors[i];
                                 var href = a.href || '';
-                                if (href.indexOf('offer') === -1 && href.indexOf('item') === -1) continue;
-                                var card = a.closest('[class*="offer"], [class*="card"], [class*="item"], [class*="feeds"], [data-offer-id], li') || a.parentElement || a;
+                                if (!href || seen[href]) continue;
+                                var card = a.closest('[data-offer-id], [class*="offer"], [class*="card"], [class*="item"], [class*="feeds"], li') || a.parentElement || a;
                                 var text = (card.innerText || '').trim();
                                 if (!text || text.length < 4) continue;
                                 var lines = text.split('\n').map(function(s){ return s.trim(); }).filter(Boolean);
@@ -192,7 +223,8 @@ object WebViewSearchFetcher {
                                 }
                                 var imgEl = card.querySelector('img');
                                 var img = imgEl ? (imgEl.getAttribute('src') || imgEl.getAttribute('data-src') || '') : '';
-                                if (title && (price || href)) {
+                                if (title && price) {
+                                    seen[href] = true;
                                     items.push({
                                         title: title,
                                         price: price,
@@ -203,18 +235,18 @@ object WebViewSearchFetcher {
                                 }
                             }
                             if (items.length > 0) {
-                                return JSON.stringify({ items: items });
+                                return wrapResult({ items: items }, 'DOM:' + items.length);
                             }
                         } catch (e) {}
-                        var bodySnippet = (document.body && document.body.innerText) ? document.body.innerText.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+
                         return JSON.stringify({
-                            __diagUrl: location.href || '',
-                            __diagTitle: document.title || '',
+                            __diagOnly: true,
+                            __diagUrl: curUrl,
+                            __diagTitle: curTitle,
                             __diagText: bodySnippet
                         });
                     })();
                 """.trimIndent()
-
                 var attempts = 0
                 val maxAttempts = 22
                 var pollerStarted = false
@@ -230,7 +262,7 @@ object WebViewSearchFetcher {
                             if (cleaned.startsWith("{")) {
                                 val parsed = runCatching { JSONObject(cleaned) }.getOrNull()
                                 if (parsed != null) {
-                                    if (parsed.has("__diagUrl")) {
+                                    if (parsed.optBoolean("__diagOnly", false)) {
                                         val u = parsed.optString("__diagUrl")
                                         if (u.isNotBlank() && u != "about:blank") {
                                             lastLoadedUrl = u
@@ -298,14 +330,21 @@ object WebViewSearchFetcher {
                         error: WebResourceError?,
                     ) {
                         if (request?.isForMainFrame == true) {
-                            lastErrorText = "HTTP/Net error: " + (error?.description?.toString().orEmpty())
+                            val code = error?.errorCode ?: 0
+                            val desc = error?.description?.toString().orEmpty()
+                            lastErrorText = "HTTP/WebError $code: $desc"
                         }
                     }
                 }
 
-                // Запускаем опрос сразу на случай, если onPageStarted/Finished задержатся
-                pollerStarted = true
-                mainHandler.postDelayed(poller, 1500L)
+                // На всякий случай запускаем таймер опроса, даже если onPageStarted задержится
+                mainHandler.postDelayed({
+                    if (!pollerStarted && !finished) {
+                        pollerStarted = true
+                        mainHandler.post(poller)
+                    }
+                }, 2000L)
+
                 webView.loadUrl(searchUrl)
             }
         }
@@ -313,11 +352,8 @@ object WebViewSearchFetcher {
 
     private fun unquoteJsString(raw: String?): String {
         if (raw.isNullOrBlank() || raw == "null") return ""
-        if (raw.length >= 2 && raw.first() == '"' && raw.last() == '"') {
-            return runCatching {
-                JSONObject("{\"v\":" + raw + "}").getString("v")
-            }.getOrDefault("")
-        }
-        return raw
+        return runCatching {
+            JSONObject("{\"v\":$raw}").getString("v")
+        }.getOrDefault("")
     }
 }

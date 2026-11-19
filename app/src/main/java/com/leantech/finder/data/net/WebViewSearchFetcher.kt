@@ -2,6 +2,7 @@ package com.leantech.finder.data.net
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
 import android.webkit.CookieManager
@@ -14,7 +15,7 @@ import org.json.JSONObject
 import kotlin.coroutines.resume
 
 /**
- * Загружает страницу поиска в скрытом WebView с десктопным User-Agent и авторизованными куками,
+ * Загружает страницу поиска в скрытом WebView с авторизованными куками,
  * перехватывает XHR/fetch ответы самого сайта и извлекает JSON или DOM-карточки товаров.
  */
 object WebViewSearchFetcher {
@@ -36,6 +37,8 @@ object WebViewSearchFetcher {
                 val appCtx = context.applicationContext
                 val webView = WebView(appCtx)
                 var finished = false
+                var lastLoadedUrl = searchUrl
+                var lastPageTitle = ""
 
                 fun cleanupAndResume(result: JSONObject?) {
                     if (finished) return
@@ -53,12 +56,13 @@ object WebViewSearchFetcher {
                     mainHandler.post { cleanupAndResume(null) }
                 }
 
+                val isMobileSite = searchUrl.contains("://1688.com") || searchUrl.contains("://1688.com")
                 webView.settings.javaScriptEnabled = true
                 webView.settings.domStorageEnabled = true
                 webView.settings.databaseEnabled = true
                 webView.settings.loadsImagesAutomatically = false
                 webView.settings.blockNetworkImage = true
-                webView.settings.userAgentString = DESKTOP_UA
+                webView.settings.userAgentString = if (isMobileSite) MtopClient.MOBILE_UA else DESKTOP_UA
 
                 val cm = CookieManager.getInstance()
                 cm.setAcceptCookie(true)
@@ -73,7 +77,7 @@ object WebViewSearchFetcher {
                         function checkPayload(text) {
                             if (!text || text.length < 300) return;
                             var clean = text.trim();
-                            if (clean.indexOf('(') > 0 && clean.indexOf('(') < 40 && clean.endsWith(')')) {
+                            if (clean.indexOf('(') > 0 && clean.indexOf('(') < 50 && clean.endsWith(')')) {
                                 clean = clean.substring(clean.indexOf('(') + 1, clean.length - 1);
                             }
                             if (clean.startsWith('{') && (
@@ -81,6 +85,7 @@ object WebViewSearchFetcher {
                                 clean.indexOf('resultList') !== -1 ||
                                 clean.indexOf('itemId') !== -1 ||
                                 clean.indexOf('offerId') !== -1 ||
+                                clean.indexOf('simpleSubject') !== -1 ||
                                 clean.indexOf('picUrl') !== -1 ||
                                 clean.indexOf('subject') !== -1
                             )) {
@@ -124,16 +129,23 @@ object WebViewSearchFetcher {
                             }
                             if (window.__INIT_DATA && typeof window.__INIT_DATA === 'object') {
                                 var raw = JSON.stringify(window.__INIT_DATA);
-                                if (raw && raw.length > 500 && (raw.indexOf('offerId') !== -1 || raw.indexOf('subject') !== -1)) {
+                                if (raw && raw.length > 500 && (
+                                    raw.indexOf('offerId') !== -1 ||
+                                    raw.indexOf('simpleSubject') !== -1 ||
+                                    raw.indexOf('subject') !== -1
+                                )) {
                                     return raw;
                                 }
                             }
                             var items = [];
-                            var anchors = document.querySelectorAll('a[href*="://1688.com"], a[href*="://goofish.com"], a[href*="item.htm"]');
+                            var anchors = document.querySelectorAll(
+                                'a[href*="offer/"], a[href*="offerId="], a[href*="://goofish.com"], a[href*="item.htm"]'
+                            );
                             for (var i = 0; i < anchors.length; i++) {
                                 var a = anchors[i];
                                 var href = a.href || '';
-                                var card = a.closest('[class*="offer"], [class*="card"], [class*="item"], [class*="feeds"], li') || a.parentElement || a;
+                                if (href.indexOf('offer') === -1 && href.indexOf('item') === -1) continue;
+                                var card = a.closest('[class*="offer"], [class*="card"], [class*="item"], [class*="feeds"], [data-offer-id], li') || a.parentElement || a;
                                 var text = (card.innerText || '').trim();
                                 if (!text || text.length < 4) continue;
                                 var lines = text.split('\n').map(function(s){ return s.trim(); }).filter(Boolean);
@@ -145,7 +157,7 @@ object WebViewSearchFetcher {
                                     if (!price && (ln.indexOf('¥') !== -1 || ln.indexOf('￥') !== -1 || /^\d+(\.\d+)?$/.test(ln))) {
                                         price = ln;
                                     }
-                                    if (!sales && (ln.indexOf('成交') !== -1 || ln.indexOf('人付款') !== -1 || ln.indexOf('想要') !== -1 || ln.indexOf('已售') !== -1)) {
+                                    if (!sales && (ln.indexOf('成交') !== -1 || ln.indexOf('人付款') !== -1 || ln.indexOf('想要') !== -1 || ln.indexOf('已售') !== -1 || ln.indexOf('件') !== -1)) {
                                         sales = ln;
                                     }
                                     if (ln.length > title.length && ln.indexOf('¥') === -1 && ln.indexOf('￥') === -1 && ln.length > 4) {
@@ -168,7 +180,7 @@ object WebViewSearchFetcher {
                                 return JSON.stringify({ items: items });
                             }
                         } catch (e) {}
-                        return '';
+                        return JSON.stringify({ __diagUrl: location.href, __diagTitle: document.title || '' });
                     })();
                 """.trimIndent()
 
@@ -186,13 +198,22 @@ object WebViewSearchFetcher {
                             if (cleaned.startsWith("{")) {
                                 val parsed = runCatching { JSONObject(cleaned) }.getOrNull()
                                 if (parsed != null) {
-                                    cm.flush()
-                                    cleanupAndResume(parsed)
-                                    return@evaluateJavascript
+                                    if (parsed.has("__diagUrl")) {
+                                        lastLoadedUrl = parsed.optString("__diagUrl", lastLoadedUrl)
+                                        lastPageTitle = parsed.optString("__diagTitle", lastPageTitle)
+                                    } else {
+                                        cm.flush()
+                                        cleanupAndResume(parsed)
+                                        return@evaluateJavascript
+                                    }
                                 }
                             }
                             if (attempts >= maxAttempts) {
-                                cleanupAndResume(null)
+                                val diag = JSONObject().apply {
+                                    put("__debugUrl", lastLoadedUrl)
+                                    put("__debugTitle", lastPageTitle)
+                                }
+                                cleanupAndResume(diag)
                             } else {
                                 mainHandler.postDelayed(this, 750L)
                             }
@@ -209,11 +230,13 @@ object WebViewSearchFetcher {
                         return scheme != "http" && scheme != "https"
                     }
 
-                    override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                    override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
+                        if (!url.isNullOrBlank()) lastLoadedUrl = url
                         view?.evaluateJavascript(hookScript, null)
                     }
 
                     override fun onPageFinished(view: WebView?, url: String?) {
+                        if (!url.isNullOrBlank()) lastLoadedUrl = url
                         view?.evaluateJavascript(hookScript, null)
                         cm.flush()
                         if (!finished && attempts == 0) {

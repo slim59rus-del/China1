@@ -16,7 +16,7 @@ import kotlin.coroutines.resume
 
 /**
  * Загружает страницу поиска в скрытом WebView с авторизованными куками,
- * перехватывает XHR/fetch ответы самого сайта и извлекает JSON или DOM-карточки товаров.
+ * перехватывает XHR/fetch/JSONP ответы и извлекает JSON или DOM-карточки товаров.
  */
 object WebViewSearchFetcher {
 
@@ -30,7 +30,7 @@ object WebViewSearchFetcher {
     suspend fun fetchJsonOrDom(
         context: Context,
         searchUrl: String,
-        timeoutMs: Long = 16_000L,
+        timeoutMs: Long = 14_000L,
     ): JSONObject? = withTimeoutOrNull(timeoutMs) {
         suspendCancellableCoroutine { cont ->
             mainHandler.post {
@@ -39,6 +39,7 @@ object WebViewSearchFetcher {
                 var finished = false
                 var lastLoadedUrl = searchUrl
                 var lastPageTitle = ""
+                var lastBodySnippet = ""
 
                 fun cleanupAndResume(result: JSONObject?) {
                     if (finished) return
@@ -77,8 +78,13 @@ object WebViewSearchFetcher {
                         function checkPayload(text) {
                             if (!text || text.length < 300) return;
                             var clean = text.trim();
-                            if (clean.indexOf('(') > 0 && clean.indexOf('(') < 50 && clean.endsWith(')')) {
-                                clean = clean.substring(clean.indexOf('(') + 1, clean.length - 1);
+                            if (clean.startsWith('/*')) {
+                                var endComment = clean.indexOf('*/');
+                                if (endComment !== -1) clean = clean.substring(endComment + 2).trim();
+                            }
+                            var openParen = clean.indexOf('(');
+                            if (openParen > 0 && openParen < 60 && clean.endsWith(')')) {
+                                clean = clean.substring(openParen + 1, clean.length - 1).trim();
                             }
                             if (clean.startsWith('{') && (
                                 clean.indexOf('offerList') !== -1 ||
@@ -124,6 +130,9 @@ object WebViewSearchFetcher {
                 val pollJs = """
                     (function() {
                         try {
+                            window.scrollBy(0, 500);
+                            window.dispatchEvent(new Event('scroll'));
+
                             if (window.__capturedApiJson) {
                                 return window.__capturedApiJson;
                             }
@@ -180,12 +189,17 @@ object WebViewSearchFetcher {
                                 return JSON.stringify({ items: items });
                             }
                         } catch (e) {}
-                        return JSON.stringify({ __diagUrl: location.href, __diagTitle: document.title || '' });
+                        var snippet = (document.body && document.body.innerText) ? document.body.innerText.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+                        return JSON.stringify({
+                            __diagUrl: location.href,
+                            __diagTitle: document.title || '',
+                            __diagText: snippet
+                        });
                     })();
                 """.trimIndent()
 
                 var attempts = 0
-                val maxAttempts = 18
+                val maxAttempts = 15
 
                 val poller = object : Runnable {
                     override fun run() {
@@ -201,6 +215,7 @@ object WebViewSearchFetcher {
                                     if (parsed.has("__diagUrl")) {
                                         lastLoadedUrl = parsed.optString("__diagUrl", lastLoadedUrl)
                                         lastPageTitle = parsed.optString("__diagTitle", lastPageTitle)
+                                        lastBodySnippet = parsed.optString("__diagText", lastBodySnippet)
                                     } else {
                                         cm.flush()
                                         cleanupAndResume(parsed)
@@ -212,6 +227,7 @@ object WebViewSearchFetcher {
                                 val diag = JSONObject().apply {
                                     put("__debugUrl", lastLoadedUrl)
                                     put("__debugTitle", lastPageTitle)
+                                    put("__debugText", lastBodySnippet)
                                 }
                                 cleanupAndResume(diag)
                             } else {
@@ -240,11 +256,13 @@ object WebViewSearchFetcher {
                         view?.evaluateJavascript(hookScript, null)
                         cm.flush()
                         if (!finished && attempts == 0) {
-                            mainHandler.postDelayed(poller, 900L)
+                            mainHandler.postDelayed(poller, 800L)
                         }
                     }
                 }
 
+                // Страховочный запуск поллера даже если редиректы задерживают onPageFinished
+                mainHandler.postDelayed(poller, 1800L)
                 webView.loadUrl(searchUrl)
             }
         }

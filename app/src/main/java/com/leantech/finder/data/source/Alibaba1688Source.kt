@@ -21,33 +21,33 @@ class Alibaba1688Source(
     override val marketplace = Marketplace.ALIBABA_1688
 
     override suspend fun search(query: String, request: SearchRequest): SourceResult {
-        val airSearchUrl = buildAirMobileSearchUrl(query, request)
-        val desktopSearchUrl = buildDesktopSearchUrl(query, request)
-        var diagInfo: String? = null
+        val searchUrl = buildDesktopSearchUrl(query, request)
+        var diagInfo = "WebView не вернул ответ (таймаут сети)"
 
         if (context != null) {
-            for (targetUrl in listOf(airSearchUrl, desktopSearchUrl)) {
-                val webJson = WebViewSearchFetcher.fetchJsonOrDom(
-                    context = context,
-                    searchUrl = targetUrl,
-                    timeoutMs = 13_000L,
-                )
-                if (webJson != null) {
-                    val products = JsonCards.extract(webJson, marketplace, query)
-                        .take(request.limitPerMarketplace)
-                    if (products.isNotEmpty()) {
-                        return SourceResult(products)
-                    }
-                    val dbgUrl = webJson.optString("__debugUrl")
-                    val dbgTitle = webJson.optString("__debugTitle")
-                    val dbgText = webJson.optString("__debugText")
-                    val host = runCatching { Uri.parse(dbgUrl).host }.getOrNull().orEmpty()
-                    val summary = listOf(host, dbgTitle, dbgText)
-                        .filter { it.isNotBlank() }
-                        .joinToString(" | ")
-                    if (summary.isNotBlank()) {
-                        diagInfo = summary
-                    }
+            cookies?.restoreAllFromBackup()
+            val webJson = WebViewSearchFetcher.fetchJsonOrDom(
+                context = context,
+                searchUrl = searchUrl,
+                timeoutMs = 22_000L,
+            )
+            if (webJson != null) {
+                val products = JsonCards.extract(webJson, marketplace, query)
+                    .take(request.limitPerMarketplace)
+                if (products.isNotEmpty()) {
+                    return SourceResult(products)
+                }
+                val dbgUrl = webJson.optString("__debugUrl")
+                val dbgTitle = webJson.optString("__debugTitle")
+                val dbgText = webJson.optString("__debugText")
+                val host = runCatching { Uri.parse(dbgUrl).host }.getOrNull().orEmpty()
+                val summary = listOf(host, dbgTitle, dbgText)
+                    .filter { it.isNotBlank() }
+                    .joinToString(" | ")
+                if (summary.isNotBlank()) {
+                    diagInfo = summary
+                } else {
+                    diagInfo = "Страница загружена, но карточки не распознаны ($dbgUrl)"
                 }
             }
         }
@@ -55,28 +55,11 @@ class Alibaba1688Source(
         return SourceResult(
             problem = SourceProblem(
                 marketplace = marketplace,
-                message = if (!diagInfo.isNullOrBlank()) {
-                    "1688: " + diagInfo
-                } else {
-                    "1688 вернул пустой список: попробуйте обновить вход или открыть поиск на сайте."
-                },
+                message = "1688: $diagInfo",
                 needsLogin = true,
-                webFallbackUrl = airSearchUrl,
+                webFallbackUrl = searchUrl,
             )
         )
-    }
-
-    private fun buildAirMobileSearchUrl(query: String, request: SearchRequest): String {
-        val builder = Uri.Builder()
-            .scheme("https")
-            .authority("://1688.com")
-            .appendPath("app")
-            .appendPath("ctf-page")
-            .appendPath("trade-search")
-            .appendPath("home.html")
-            .appendQueryParameter("keywords", query)
-        appendSortParams(builder, request)
-        return builder.build().toString()
     }
 
     private fun buildDesktopSearchUrl(query: String, request: SearchRequest): String {
@@ -86,11 +69,8 @@ class Alibaba1688Source(
             .appendPath("selloffer")
             .appendPath("offer_search.htm")
             .appendQueryParameter("keywords", query)
-        appendSortParams(builder, request)
-        return builder.build().toString()
-    }
+            .appendQueryParameter("charset", "utf-8")
 
-    private fun appendSortParams(builder: Uri.Builder, request: SearchRequest) {
         when (request.sort) {
             SortOption.SALES_DESC -> {
                 builder.appendQueryParameter("sortType", "va_rmdarkgmv")
@@ -106,5 +86,6 @@ class Alibaba1688Source(
             }
             SortOption.RELEVANCE -> Unit
         }
+        return builder.build().toString()
     }
 }

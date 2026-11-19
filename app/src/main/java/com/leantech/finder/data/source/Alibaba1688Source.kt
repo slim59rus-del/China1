@@ -1,6 +1,7 @@
 package com.leantech.finder.data.source
 
 import android.content.Context
+import android.net.Uri
 import com.leantech.finder.data.net.CookieStore
 import com.leantech.finder.data.net.MtopClient
 import com.leantech.finder.data.net.MtopException
@@ -29,28 +30,42 @@ class Alibaba1688Source(
     override val marketplace = Marketplace.ALIBABA_1688
 
     private val webClient = OkHttpClient.Builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(20, TimeUnit.SECONDS)
+        .connectTimeout(12, TimeUnit.SECONDS)
+        .readTimeout(15, TimeUnit.SECONDS)
         .followRedirects(true)
         .build()
 
     override suspend fun search(query: String, request: SearchRequest): SourceResult {
-        val searchUrl = buildDesktopSearchUrl(query, request)
+        val airSearchUrl = buildAirMobileSearchUrl(query, request)
+        val wapSearchUrl = buildWapMobileSearchUrl(query, request)
+        var diagInfo: String? = null
 
-        // 1. Основной путь: скрытый WebView с десктопным User-Agent и авторизованными куками
+        // 1. Основной путь: скрытый WebView с мобильной авторизованной сессией (://1688.com -> ://1688.com)
         if (context != null) {
-            val webJson = WebViewSearchFetcher.fetchJsonOrDom(context, searchUrl)
-            if (webJson != null) {
-                val products = JsonCards.extract(webJson, marketplace, query)
-                    .take(request.limitPerMarketplace)
-                if (products.isNotEmpty()) {
-                    return SourceResult(products)
+            for (targetUrl in listOf(airSearchUrl, wapSearchUrl)) {
+                val webJson = WebViewSearchFetcher.fetchJsonOrDom(
+                    context = context,
+                    searchUrl = targetUrl,
+                    timeoutMs = 11_000L,
+                )
+                if (webJson != null) {
+                    val products = JsonCards.extract(webJson, marketplace, query)
+                        .take(request.limitPerMarketplace)
+                    if (products.isNotEmpty()) {
+                        return SourceResult(products)
+                    }
+                    val dbgUrl = webJson.optString("__debugUrl")
+                    val dbgTitle = webJson.optString("__debugTitle")
+                    if (dbgUrl.isNotBlank() || dbgTitle.isNotBlank()) {
+                        val host = runCatching { Uri.parse(dbgUrl).host }.getOrNull().orEmpty()
+                        diagInfo = listOf(host, dbgTitle).filter { it.isNotBlank() }.joinToString(" / ")
+                    }
                 }
             }
         }
 
         // 2. Резервный путь: прямой HTTP-запрос с куками и извлечение __INIT_DATA
-        val htmlProducts = fetchFromSearchPage(searchUrl, query, request)
+        val htmlProducts = fetchFromSearchPage(wapSearchUrl, query, request)
         if (htmlProducts.isNotEmpty()) {
             return SourceResult(htmlProducts)
         }
@@ -79,21 +94,22 @@ class Alibaba1688Source(
             }
         }
 
+        val reason = lastError ?: diagInfo
         return SourceResult(
             problem = SourceProblem(
                 marketplace = marketplace,
-                message = if (!lastError.isNullOrBlank()) {
-                    "1688 вернул пустой список ($lastError)"
+                message = if (!reason.isNullOrBlank()) {
+                    "1688 вернул пустой список ($reason)"
                 } else {
                     "1688 вернул пустой список: попробуйте обновить вход или открыть поиск на сайте."
                 },
                 needsLogin = true,
-                webFallbackUrl = searchUrl,
+                webFallbackUrl = airSearchUrl,
             )
         )
     }
 
-    private fun buildDesktopSearchUrl(query: String, request: SearchRequest): String {
+    private fun buildAirMobileSearchUrl(query: String, request: SearchRequest): String {
         val encoded = URLEncoder.encode(query, "UTF-8")
         val sortParam = when (request.sort) {
             SortOption.SALES_DESC -> "&sortType=va_rmdarkgmv&descendOrder=true"
@@ -101,7 +117,18 @@ class Alibaba1688Source(
             SortOption.PRICE_DESC -> "&sortType=price&descendOrder=true"
             SortOption.RELEVANCE -> ""
         }
-        return "https://1688.com" + encoded + sortParam
+        return "https://://1688.com/app/ctf-page/trade-search/home.html?keywords=" + encoded + sortParam
+    }
+
+    private fun buildWapMobileSearchUrl(query: String, request: SearchRequest): String {
+        val encoded = URLEncoder.encode(query, "UTF-8")
+        val sortParam = when (request.sort) {
+            SortOption.SALES_DESC -> "&sortType=va_rmdarkgmv&descendOrder=true"
+            SortOption.PRICE_ASC -> "&sortType=price&descendOrder=false"
+            SortOption.PRICE_DESC -> "&sortType=price&descendOrder=true"
+            SortOption.RELEVANCE -> ""
+        }
+        return "https://://1688.com/offer_search/-6D7033.html?keywords=" + encoded + sortParam
     }
 
     private fun buildMobilePayload(query: String, request: SearchRequest): JSONObject {
@@ -131,14 +158,10 @@ class Alibaba1688Source(
         runCatching {
             val reqBuilder = Request.Builder()
                 .url(url)
-                .header(
-                    "User-Agent",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
-                        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                )
+                .header("User-Agent", MtopClient.MOBILE_UA)
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                 .header("Accept-Language", "zh-CN,zh;q=0.9")
-                .header("Referer", "https://1688.com")
+                .header("Referer", "https://://1688.com/")
 
             val cookieStr = cookies?.cookieHeader(url).orEmpty()
             if (cookieStr.isNotBlank()) {

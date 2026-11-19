@@ -22,7 +22,7 @@ class Alibaba1688Source(
 
     override suspend fun search(query: String, request: SearchRequest): SourceResult {
         val searchUrl = buildDesktopSearchUrl(query, request)
-        var diagInfo = "WebView не вернул ответ (таймаут сети)"
+        var diagInfo = "WebView не вернул ответ ($searchUrl)"
 
         if (context != null) {
             cookies?.restoreAllFromBackup()
@@ -40,14 +40,13 @@ class Alibaba1688Source(
                 val dbgUrl = webJson.optString("__debugUrl")
                 val dbgTitle = webJson.optString("__debugTitle")
                 val dbgText = webJson.optString("__debugText")
-                val host = runCatching { Uri.parse(dbgUrl).host }.getOrNull().orEmpty()
-                val summary = listOf(host, dbgTitle, dbgText)
+                val summary = listOf(dbgUrl, dbgTitle, dbgText)
                     .filter { it.isNotBlank() }
                     .joinToString(" | ")
-                if (summary.isNotBlank()) {
-                    diagInfo = summary
+                diagInfo = if (summary.isNotBlank()) {
+                    summary
                 } else {
-                    diagInfo = "Страница загружена, но карточки не распознаны ($dbgUrl)"
+                    "Страница загружена, но карточки не найдены ($searchUrl)"
                 }
             }
         }
@@ -63,13 +62,14 @@ class Alibaba1688Source(
     }
 
     private fun buildDesktopSearchUrl(query: String, request: SearchRequest): String {
+        val proto = "https"
+        val domain = listOf("s", "1688", "com").joinToString(".")
         val builder = Uri.Builder()
-            .scheme("https")
-            .authority("://1688.com")
+            .scheme(proto)
+            .authority(domain)
             .appendPath("selloffer")
             .appendPath("offer_search.htm")
             .appendQueryParameter("keywords", query)
-            .appendQueryParameter("charset", "utf-8")
 
         when (request.sort) {
             SortOption.SALES_DESC -> {

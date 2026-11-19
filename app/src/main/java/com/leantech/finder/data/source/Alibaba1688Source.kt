@@ -10,7 +10,6 @@ import com.leantech.finder.domain.model.Marketplace
 import com.leantech.finder.domain.model.SearchRequest
 import com.leantech.finder.domain.model.SortOption
 import com.leantech.finder.domain.model.SourceProblem
-import java.net.URLEncoder
 
 class Alibaba1688Source(
     private val mtop: MtopClient,
@@ -68,24 +67,44 @@ class Alibaba1688Source(
     }
 
     private fun buildAirMobileSearchUrl(query: String, request: SearchRequest): String {
-        val encoded = URLEncoder.encode(query, "UTF-8")
-        val sortParam = when (request.sort) {
-            SortOption.SALES_DESC -> "&sortType=va_rmdarkgmv&descendOrder=true"
-            SortOption.PRICE_ASC -> "&sortType=price&descendOrder=false"
-            SortOption.PRICE_DESC -> "&sortType=price&descendOrder=true"
-            SortOption.RELEVANCE -> ""
-        }
-        return "https://1688.com" + encoded + sortParam
+        val builder = Uri.Builder()
+            .scheme("https")
+            .authority("://1688.com")
+            .appendPath("app")
+            .appendPath("ctf-page")
+            .appendPath("trade-search")
+            .appendPath("home.html")
+            .appendQueryParameter("keywords", query)
+        appendSortParams(builder, request)
+        return builder.build().toString()
     }
 
     private fun buildDesktopSearchUrl(query: String, request: SearchRequest): String {
-        val encoded = URLEncoder.encode(query, "UTF-8")
-        val sortParam = when (request.sort) {
-            SortOption.SALES_DESC -> "&sortType=va_rmdarkgmv&descendOrder=true"
-            SortOption.PRICE_ASC -> "&sortType=price&descendOrder=false"
-            SortOption.PRICE_DESC -> "&sortType=price&descendOrder=true"
-            SortOption.RELEVANCE -> ""
+        val builder = Uri.Builder()
+            .scheme("https")
+            .authority("://1688.com")
+            .appendPath("selloffer")
+            .appendPath("offer_search.htm")
+            .appendQueryParameter("keywords", query)
+        appendSortParams(builder, request)
+        return builder.build().toString()
+    }
+
+    private fun appendSortParams(builder: Uri.Builder, request: SearchRequest) {
+        when (request.sort) {
+            SortOption.SALES_DESC -> {
+                builder.appendQueryParameter("sortType", "va_rmdarkgmv")
+                builder.appendQueryParameter("descendOrder", "true")
+            }
+            SortOption.PRICE_ASC -> {
+                builder.appendQueryParameter("sortType", "price")
+                builder.appendQueryParameter("descendOrder", "false")
+            }
+            SortOption.PRICE_DESC -> {
+                builder.appendQueryParameter("sortType", "price")
+                builder.appendQueryParameter("descendOrder", "true")
+            }
+            SortOption.RELEVANCE -> Unit
         }
-        return "https://1688.com" + encoded + sortParam
     }
 }

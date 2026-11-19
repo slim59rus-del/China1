@@ -14,12 +14,16 @@ import org.json.JSONObject
 import kotlin.coroutines.resume
 
 /**
- * Выполняет загрузку страницы поиска в скрытом WebView с авторизованными куками CookieManager
- * и извлекает данные карточек товаров (window.__INIT_DATA или DOM-элементы), обходя RGV587_ERROR.
+ * Загружает страницу поиска в скрытом WebView с десктопным User-Agent и авторизованными куками,
+ * перехватывает XHR/fetch ответы самого сайта и извлекает JSON или DOM-карточки товаров.
  */
 object WebViewSearchFetcher {
 
     private val mainHandler = Handler(Looper.getMainLooper())
+
+    private const val DESKTOP_UA =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+            "Chrome/124.0.0.0 Safari/537.36"
 
     @SuppressLint("SetJavaScriptEnabled")
     suspend fun fetchJsonOrDom(
@@ -54,31 +58,86 @@ object WebViewSearchFetcher {
                 webView.settings.databaseEnabled = true
                 webView.settings.loadsImagesAutomatically = false
                 webView.settings.blockNetworkImage = true
-                webView.settings.userAgentString = MtopClient.MOBILE_UA
+                webView.settings.userAgentString = DESKTOP_UA
 
                 val cm = CookieManager.getInstance()
                 cm.setAcceptCookie(true)
                 cm.setAcceptThirdPartyCookies(webView, true)
 
+                val hookScript = """
+                    (function() {
+                        if (window.__finderHooked) return;
+                        window.__finderHooked = true;
+                        window.__capturedApiJson = null;
+
+                        function checkPayload(text) {
+                            if (!text || text.length < 300) return;
+                            var clean = text.trim();
+                            if (clean.indexOf('(') > 0 && clean.indexOf('(') < 40 && clean.endsWith(')')) {
+                                clean = clean.substring(clean.indexOf('(') + 1, clean.length - 1);
+                            }
+                            if (clean.startsWith('{') && (
+                                clean.indexOf('offerList') !== -1 ||
+                                clean.indexOf('resultList') !== -1 ||
+                                clean.indexOf('itemId') !== -1 ||
+                                clean.indexOf('offerId') !== -1 ||
+                                clean.indexOf('picUrl') !== -1 ||
+                                clean.indexOf('subject') !== -1
+                            )) {
+                                window.__capturedApiJson = clean;
+                            }
+                        }
+
+                        var origFetch = window.fetch;
+                        if (origFetch) {
+                            window.fetch = function() {
+                                return origFetch.apply(this, arguments).then(function(resp) {
+                                    try {
+                                        resp.clone().text().then(checkPayload);
+                                    } catch (e) {}
+                                    return resp;
+                                });
+                            };
+                        }
+
+                        var origOpen = XMLHttpRequest.prototype.open;
+                        var origSend = XMLHttpRequest.prototype.send;
+                        XMLHttpRequest.prototype.open = function(method, url) {
+                            this.__reqUrl = url || '';
+                            return origOpen.apply(this, arguments);
+                        };
+                        XMLHttpRequest.prototype.send = function() {
+                            this.addEventListener('load', function() {
+                                try {
+                                    checkPayload(this.responseText);
+                                } catch (e) {}
+                            });
+                            return origSend.apply(this, arguments);
+                        };
+                    })();
+                """.trimIndent()
                 val pollJs = """
                     (function() {
                         try {
+                            if (window.__capturedApiJson) {
+                                return window.__capturedApiJson;
+                            }
                             if (window.__INIT_DATA && typeof window.__INIT_DATA === 'object') {
                                 var raw = JSON.stringify(window.__INIT_DATA);
-                                if (raw && raw.length > 500) {
-                                    return JSON.stringify({ source: 'init_data', payload: window.__INIT_DATA });
+                                if (raw && raw.length > 500 && (raw.indexOf('offerId') !== -1 || raw.indexOf('subject') !== -1)) {
+                                    return raw;
                                 }
                             }
                             var items = [];
-                            var anchors = document.querySelectorAll('a[href*="offer/"], a[href*="item.htm"], a[href*="item?id="], a[href*="://goofish.com"]');
+                            var anchors = document.querySelectorAll('a[href*="://1688.com"], a[href*="://goofish.com"], a[href*="item.htm"]');
                             for (var i = 0; i < anchors.length; i++) {
                                 var a = anchors[i];
                                 var href = a.href || '';
-                                var card = a.closest('[class*="card"], [class*="item"], [class*="offer"], li, div') || a;
+                                var card = a.closest('[class*="offer"], [class*="card"], [class*="item"], [class*="feeds"], li') || a.parentElement || a;
                                 var text = (card.innerText || '').trim();
                                 if (!text || text.length < 4) continue;
                                 var lines = text.split('\n').map(function(s){ return s.trim(); }).filter(Boolean);
-                                var title = lines[0] || '';
+                                var title = '';
                                 var price = '';
                                 var sales = '';
                                 for (var j = 0; j < lines.length; j++) {
@@ -89,7 +148,7 @@ object WebViewSearchFetcher {
                                     if (!sales && (ln.indexOf('成交') !== -1 || ln.indexOf('人付款') !== -1 || ln.indexOf('想要') !== -1 || ln.indexOf('已售') !== -1)) {
                                         sales = ln;
                                     }
-                                    if (ln.length > title.length && ln.indexOf('¥') === -1 && ln.indexOf('￥') === -1) {
+                                    if (ln.length > title.length && ln.indexOf('¥') === -1 && ln.indexOf('￥') === -1 && ln.length > 4) {
                                         title = ln;
                                     }
                                 }
@@ -106,12 +165,13 @@ object WebViewSearchFetcher {
                                 }
                             }
                             if (items.length > 0) {
-                                return JSON.stringify({ source: 'dom', items: items });
+                                return JSON.stringify({ items: items });
                             }
                         } catch (e) {}
                         return '';
                     })();
                 """.trimIndent()
+
                 var attempts = 0
                 val maxAttempts = 18
 
@@ -119,6 +179,7 @@ object WebViewSearchFetcher {
                     override fun run() {
                         if (finished) return
                         attempts++
+                        webView.evaluateJavascript(hookScript, null)
                         webView.evaluateJavascript(pollJs) { rawResult ->
                             if (finished) return@evaluateJavascript
                             val cleaned = unquoteJsString(rawResult)
@@ -126,8 +187,7 @@ object WebViewSearchFetcher {
                                 val parsed = runCatching { JSONObject(cleaned) }.getOrNull()
                                 if (parsed != null) {
                                     cm.flush()
-                                    val payloadObj = parsed.optJSONObject("payload") ?: parsed
-                                    cleanupAndResume(payloadObj)
+                                    cleanupAndResume(parsed)
                                     return@evaluateJavascript
                                 }
                             }
@@ -149,7 +209,12 @@ object WebViewSearchFetcher {
                         return scheme != "http" && scheme != "https"
                     }
 
+                    override fun onPageStarted(view: WebView?, url: String?, favicon: android.graphics.Bitmap?) {
+                        view?.evaluateJavascript(hookScript, null)
+                    }
+
                     override fun onPageFinished(view: WebView?, url: String?) {
+                        view?.evaluateJavascript(hookScript, null)
                         cm.flush()
                         if (!finished && attempts == 0) {
                             mainHandler.postDelayed(poller, 900L)

@@ -5,8 +5,11 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.os.Handler
 import android.os.Looper
+import android.view.View
 import android.webkit.CookieManager
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -15,8 +18,8 @@ import org.json.JSONObject
 import kotlin.coroutines.resume
 
 /**
- * Загружает страницу поиска в скрытом WebView с авторизованными куками,
- * перехватывает XHR/fetch/JSONP ответы и извлекает JSON или DOM-карточки товаров.
+ * Загружает страницу поиска в виртуальном WebView (с заданными размерами экрана для движка Chromium),
+ * перехватывает XHR/fetch ответы и извлекает JSON или DOM-карточки товаров.
  */
 object WebViewSearchFetcher {
 
@@ -30,22 +33,23 @@ object WebViewSearchFetcher {
     suspend fun fetchJsonOrDom(
         context: Context,
         searchUrl: String,
-        timeoutMs: Long = 14_000L,
+        timeoutMs: Long = 22_000L,
     ): JSONObject? = withTimeoutOrNull(timeoutMs) {
         suspendCancellableCoroutine { cont ->
             mainHandler.post {
                 val appCtx = context.applicationContext
                 val webView = WebView(appCtx)
                 var finished = false
-                var lastLoadedUrl = searchUrl
+                var lastLoadedUrl = ""
                 var lastPageTitle = ""
-                var lastBodySnippet = ""
+                var lastErrorText = ""
 
                 fun cleanupAndResume(result: JSONObject?) {
                     if (finished) return
                     finished = true
                     runCatching {
                         webView.stopLoading()
+                        webView.onPause()
                         webView.destroy()
                     }
                     if (cont.isActive) {
@@ -57,12 +61,24 @@ object WebViewSearchFetcher {
                     mainHandler.post { cleanupAndResume(null) }
                 }
 
+                // Задаём виртуальные размеры экрана, иначе Chromium на EMUI/Android не рендерит DOM и зависает на about:blank
+                val widthSpec = View.MeasureSpec.makeMeasureSpec(1080, View.MeasureSpec.EXACTLY)
+                val heightSpec = View.MeasureSpec.makeMeasureSpec(1920, View.MeasureSpec.EXACTLY)
+                webView.measure(widthSpec, heightSpec)
+                webView.layout(0, 0, 1080, 1920)
+                webView.onResume()
+
                 val isMobileSite = searchUrl.contains("://1688.com") || searchUrl.contains("://1688.com")
                 webView.settings.javaScriptEnabled = true
                 webView.settings.domStorageEnabled = true
                 webView.settings.databaseEnabled = true
                 webView.settings.loadsImagesAutomatically = false
                 webView.settings.blockNetworkImage = true
+                webView.settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+                webView.settings.setSupportMultipleWindows(false)
+                webView.settings.javaScriptCanOpenWindowsAutomatically = false
+                webView.settings.useWideViewPort = true
+                webView.settings.loadWithOverviewMode = true
                 webView.settings.userAgentString = if (isMobileSite) MtopClient.MOBILE_UA else DESKTOP_UA
 
                 val cm = CookieManager.getInstance()
@@ -78,13 +94,8 @@ object WebViewSearchFetcher {
                         function checkPayload(text) {
                             if (!text || text.length < 300) return;
                             var clean = text.trim();
-                            if (clean.startsWith('/*')) {
-                                var endComment = clean.indexOf('*/');
-                                if (endComment !== -1) clean = clean.substring(endComment + 2).trim();
-                            }
-                            var openParen = clean.indexOf('(');
-                            if (openParen > 0 && openParen < 60 && clean.endsWith(')')) {
-                                clean = clean.substring(openParen + 1, clean.length - 1).trim();
+                            if (clean.indexOf('(') > 0 && clean.indexOf('(') < 50 && clean.endsWith(')')) {
+                                clean = clean.substring(clean.indexOf('(') + 1, clean.length - 1);
                             }
                             if (clean.startsWith('{') && (
                                 clean.indexOf('offerList') !== -1 ||
@@ -130,9 +141,6 @@ object WebViewSearchFetcher {
                 val pollJs = """
                     (function() {
                         try {
-                            window.scrollBy(0, 500);
-                            window.dispatchEvent(new Event('scroll'));
-
                             if (window.__capturedApiJson) {
                                 return window.__capturedApiJson;
                             }
@@ -144,6 +152,15 @@ object WebViewSearchFetcher {
                                     raw.indexOf('subject') !== -1
                                 )) {
                                     return raw;
+                                }
+                            }
+                            if (window.data && typeof window.data === 'object') {
+                                var rawData = JSON.stringify(window.data);
+                                if (rawData && rawData.length > 500 && (
+                                    rawData.indexOf('offerId') !== -1 ||
+                                    rawData.indexOf('subject') !== -1
+                                )) {
+                                    return rawData;
                                 }
                             }
                             var items = [];
@@ -189,17 +206,18 @@ object WebViewSearchFetcher {
                                 return JSON.stringify({ items: items });
                             }
                         } catch (e) {}
-                        var snippet = (document.body && document.body.innerText) ? document.body.innerText.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+                        var bodySnippet = (document.body && document.body.innerText) ? document.body.innerText.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
                         return JSON.stringify({
-                            __diagUrl: location.href,
+                            __diagUrl: location.href || '',
                             __diagTitle: document.title || '',
-                            __diagText: snippet
+                            __diagText: bodySnippet
                         });
                     })();
                 """.trimIndent()
 
                 var attempts = 0
-                val maxAttempts = 15
+                val maxAttempts = 22
+                var pollerStarted = false
 
                 val poller = object : Runnable {
                     override fun run() {
@@ -213,9 +231,14 @@ object WebViewSearchFetcher {
                                 val parsed = runCatching { JSONObject(cleaned) }.getOrNull()
                                 if (parsed != null) {
                                     if (parsed.has("__diagUrl")) {
-                                        lastLoadedUrl = parsed.optString("__diagUrl", lastLoadedUrl)
-                                        lastPageTitle = parsed.optString("__diagTitle", lastPageTitle)
-                                        lastBodySnippet = parsed.optString("__diagText", lastBodySnippet)
+                                        val u = parsed.optString("__diagUrl")
+                                        if (u.isNotBlank() && u != "about:blank") {
+                                            lastLoadedUrl = u
+                                        }
+                                        val t = parsed.optString("__diagTitle")
+                                        if (t.isNotBlank()) lastPageTitle = t
+                                        val txt = parsed.optString("__diagText")
+                                        if (txt.isNotBlank()) lastErrorText = txt
                                     } else {
                                         cm.flush()
                                         cleanupAndResume(parsed)
@@ -225,13 +248,13 @@ object WebViewSearchFetcher {
                             }
                             if (attempts >= maxAttempts) {
                                 val diag = JSONObject().apply {
-                                    put("__debugUrl", lastLoadedUrl)
+                                    put("__debugUrl", lastLoadedUrl.ifBlank { searchUrl })
                                     put("__debugTitle", lastPageTitle)
-                                    put("__debugText", lastBodySnippet)
+                                    put("__debugText", lastErrorText)
                                 }
                                 cleanupAndResume(diag)
                             } else {
-                                mainHandler.postDelayed(this, 750L)
+                                mainHandler.postDelayed(this, 800L)
                             }
                         }
                     }
@@ -247,22 +270,42 @@ object WebViewSearchFetcher {
                     }
 
                     override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
-                        if (!url.isNullOrBlank()) lastLoadedUrl = url
+                        if (!url.isNullOrBlank() && url != "about:blank") {
+                            lastLoadedUrl = url
+                        }
                         view?.evaluateJavascript(hookScript, null)
+                        if (!pollerStarted && !finished) {
+                            pollerStarted = true
+                            mainHandler.postDelayed(poller, 1200L)
+                        }
                     }
 
                     override fun onPageFinished(view: WebView?, url: String?) {
-                        if (!url.isNullOrBlank()) lastLoadedUrl = url
+                        if (!url.isNullOrBlank() && url != "about:blank") {
+                            lastLoadedUrl = url
+                        }
                         view?.evaluateJavascript(hookScript, null)
                         cm.flush()
-                        if (!finished && attempts == 0) {
+                        if (!pollerStarted && !finished) {
+                            pollerStarted = true
                             mainHandler.postDelayed(poller, 800L)
+                        }
+                    }
+
+                    override fun onReceivedError(
+                        view: WebView?,
+                        request: WebResourceRequest?,
+                        error: WebResourceError?,
+                    ) {
+                        if (request?.isForMainFrame == true) {
+                            lastErrorText = "HTTP/Net error: " + (error?.description?.toString().orEmpty())
                         }
                     }
                 }
 
-                // Страховочный запуск поллера даже если редиректы задерживают onPageFinished
-                mainHandler.postDelayed(poller, 1800L)
+                // Запускаем опрос сразу на случай, если onPageStarted/Finished задержатся
+                pollerStarted = true
+                mainHandler.postDelayed(poller, 1500L)
                 webView.loadUrl(searchUrl)
             }
         }
